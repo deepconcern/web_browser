@@ -1,0 +1,15 @@
+[package]
+name = "wb-html"
+description = "WHATWG HTML tokenizer and tree builder."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.layer]
+level = 2
+
+[lints]
+workspace = true

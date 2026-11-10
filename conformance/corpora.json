@@ -1,0 +1,19 @@
+{
+  "_comment": "Conformance corpora, fetched at pinned commits into target/corpora by `cargo xtask fetch-corpora`. Bump a pin in its own PR.",
+  "corpora": [
+    {
+      "name": "html5lib-tests",
+      "repo": "https://github.com/html5lib/html5lib-tests",
+      "commit": "c5495c539ca8a79c3c5107f5f14010bcff9a35d5",
+      "enabled": true,
+      "sparse": []
+    },
+    {
+      "name": "wpt",
+      "repo": "https://github.com/web-platform-tests/wpt",
+      "commit": "254c1954d5ed8a284438bc7d5aeba3841742e785",
+      "enabled": true,
+      "sparse": ["/html/syntax/parsing/"]
+    }
+  ]
+}

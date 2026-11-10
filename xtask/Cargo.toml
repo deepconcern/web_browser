@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+description = "Project automation: layer check, corpus fetching and conformance runs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

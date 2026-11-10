@@ -1,0 +1,15 @@
+[package]
+name = "wb-layout"
+description = "Box generation and layout."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.layer]
+level = 4
+
+[lints]
+workspace = true

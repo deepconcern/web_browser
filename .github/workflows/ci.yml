@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: Build, lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+      - name: layer check
+        run: cargo xtask layers
+
+  dependencies:
+    name: Dependency policy (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  conformance:
+    name: Conformance (no regressions)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: target/corpora
+          key: corpora-${{ hashFiles('conformance/corpora.json') }}
+      - name: Fetch pinned corpora
+        run: cargo xtask fetch-corpora
+      - name: Run suites and compare with baselines
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # On PRs, also compare with the target branch's baseline so a PR
+          # can't hide a regression by lowering the committed baseline.
+          if [ -n "$BASE_REF" ] && git fetch --quiet --depth 1 origin "$BASE_REF" \
+              && git show FETCH_HEAD:conformance/baseline.json > "$RUNNER_TEMP/base-baseline.json" 2>/dev/null; then
+            cargo xtask conformance --check --base "$RUNNER_TEMP/base-baseline.json"
+          else
+            cargo xtask conformance --check
+          fi
+      - name: Scorecard is up to date
+        run: git diff --exit-code docs/scorecard.md

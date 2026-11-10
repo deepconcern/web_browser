@@ -1,0 +1,19 @@
+[package]
+name = "wb-shell"
+description = "The browser application: window, tabs, URL bar and settings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "web_browser"
+path = "src/main.rs"
+
+[package.metadata.layer]
+level = 6
+
+[lints]
+workspace = true
