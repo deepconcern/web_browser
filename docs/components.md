@@ -8,6 +8,7 @@ code.
 | Component | Used by | License | Origin | Plan |
 |---|---|---|---|---|
 | `serde_json` | `xtask` (tooling only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
+| `regex` | `wb-blocker` (`/regex/` network filters) | MIT/Apache-2.0 (deps: `regex-automata`, `regex-syntax` MIT/Apache-2.0; `aho-corasick`, `memchr` Unlicense OR MIT) | Independent (rust-lang) | Keep |
 
 Planned for M1, per the spec: `url`, `hyper`, `rustls`, `cssparser` (Servo-origin,
 temporary), `fontdb`, `rustybuzz`/`harfrust`, `swash`, `image`, `rusqlite`,

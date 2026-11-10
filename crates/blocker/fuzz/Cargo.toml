@@ -1,0 +1,24 @@
+[package]
+name = "wb-blocker-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.10"
+wb-blocker = { path = ".." }
+
+# Kept out of the main workspace. Run from crates/blocker with
+# `cargo +nightly fuzz run parse_list`.
+[workspace]
+
+[[bin]]
+name = "parse_list"
+path = "fuzz_targets/parse_list.rs"
+test = false
+doc = false
+bench = false
