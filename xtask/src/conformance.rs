@@ -1,15 +1,31 @@
 //! Runs the conformance suites, writes `docs/scorecard.md`, and compares pass
 //! counts against `conformance/baseline.json`.
 //!
-//! In M0 no engine code exists yet, so every case is reported as failing. The
-//! suites already discover and count the real test cases; when `wb-html` grows a
-//! tokenizer and tree builder, `run_case` is where they get hooked in.
+//! - `html5lib-tokenizer`: one case per (test, initial state) in
+//!   `tokenizer/*.test`. A case passes when the token stream matches and the
+//!   parse error codes match as a multiset (positions are not compared).
+//! - `wpt-html-tree-construction`: one case per `#data` block in the WPT
+//!   `html/syntax/parsing/resources/*.dat` files. A case passes when the
+//!   tree matches. Tests without `#script-on`/`#script-off` must pass with
+//!   the scripting flag both off and on. Error counts are not compared (the
+//!   spec does not define tree-construction error codes), matching what the
+//!   WPT harness checks.
+//!
+//! `xmlViolationTests` compare the token stream after the infoset coercion
+//! of HTML §13.2.9 and do not compare errors.
+//!
+//! Set `XTASK_CONFORMANCE_FAILURES=1` to print the failing case ids, and
+//! `XTASK_SHOW=1` to print the expected and actual trees of failing
+//! tree-construction cases.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
+use wb_dom::{Attribute, Namespace, QuirksMode};
+use wb_html::tokenizer::{State, Token, Tokenizer};
+use wb_html::{FragmentContext, ParseOptions, dump_tree, parse_document, parse_fragment};
 
 use crate::corpora::corpora_dir;
 use crate::{Result, read_json};
@@ -65,9 +81,23 @@ pub fn run(root: &Path, args: &[String]) -> Result<()> {
     }
 }
 
-fn run_suite(id: &'static str, title: &'static str, cases: Vec<String>) -> SuiteResult {
+/// One test case: an id and whether it passed.
+struct Case {
+    id: String,
+    passed: bool,
+}
+
+fn run_suite(id: &'static str, title: &'static str, cases: Vec<Case>) -> SuiteResult {
+    let show_failures = std::env::var_os("XTASK_CONFORMANCE_FAILURES").is_some();
     let total = cases.len() as u64;
-    let passed = cases.iter().filter(|case| run_case(id, case)).count() as u64;
+    let mut passed = 0;
+    for case in &cases {
+        if case.passed {
+            passed += 1;
+        } else if show_failures {
+            eprintln!("FAIL {id} {}", case.id);
+        }
+    }
     SuiteResult {
         id,
         title,
@@ -76,13 +106,10 @@ fn run_suite(id: &'static str, title: &'static str, cases: Vec<String>) -> Suite
     }
 }
 
-/// Runs one test case. Nothing is implemented in M0, so every case fails.
-fn run_case(_suite: &str, _case: &str) -> bool {
-    false
-}
+// ----- html5lib tokenizer tests ---------------------------------------------
 
 /// One case per (test, initial state) pair in `tokenizer/*.test`.
-fn tokenizer_cases(dir: &Path) -> Result<Vec<String>> {
+fn tokenizer_cases(dir: &Path) -> Result<Vec<Case>> {
     let mut cases = Vec::new();
     for file in files_with_extension(dir, "test")? {
         let json = read_json(&file)?;
@@ -93,12 +120,16 @@ fn tokenizer_cases(dir: &Path) -> Result<Vec<String>> {
                 .and_then(Value::as_array)
                 .map_or(&[][..], Vec::as_slice);
             for (index, test) in tests.iter().enumerate() {
-                let states = test
+                let states: Vec<&str> = test
                     .get("initialStates")
                     .and_then(Value::as_array)
-                    .map_or(1, Vec::len);
-                for state in 0..states {
-                    cases.push(format!("{file_name}:{key}:{index}:{state}"));
+                    .map(|s| s.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_else(|| vec!["Data state"]);
+                for (state_index, state) in states.iter().enumerate() {
+                    cases.push(Case {
+                        id: format!("{file_name}:{key}:{index}:{state_index}"),
+                        passed: run_tokenizer_test(test, state, key == "xmlViolationTests"),
+                    });
                 }
             }
         }
@@ -106,15 +137,341 @@ fn tokenizer_cases(dir: &Path) -> Result<Vec<String>> {
     Ok(cases)
 }
 
+/// Undoes the extra `\uHHHH` escaping of `doubleEscaped` tests. Returns
+/// `None` for lone surrogates, which a Rust string cannot hold.
+fn unescape(s: &str) -> Option<String> {
+    let mut units: Vec<u16> = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek() == Some(&'u') {
+            chars.next();
+            let hex: String = chars.by_ref().take(4).collect();
+            units.push(u16::from_str_radix(&hex, 16).ok()?);
+        } else {
+            let mut buf = [0; 2];
+            units.extend_from_slice(c.encode_utf16(&mut buf));
+        }
+    }
+    String::from_utf16(&units).ok()
+}
+
+fn unescape_value(value: &Value) -> Option<Value> {
+    Some(match value {
+        Value::String(s) => Value::String(unescape(s)?),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(unescape_value)
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| Some((unescape(k)?, unescape_value(v)?)))
+                .collect::<Option<Map<_, _>>>()?,
+        ),
+        other => other.clone(),
+    })
+}
+
+fn token_json(token: &Token) -> Option<Value> {
+    Some(match token {
+        Token::Doctype(d) => Value::Array(vec![
+            "DOCTYPE".into(),
+            d.name.clone().map_or(Value::Null, Value::from),
+            d.public_id.clone().map_or(Value::Null, Value::from),
+            d.system_id.clone().map_or(Value::Null, Value::from),
+            Value::Bool(!d.force_quirks),
+        ]),
+        Token::StartTag(tag) => {
+            let attributes: Map<String, Value> = tag
+                .attributes
+                .iter()
+                .map(|a| (a.name.clone(), Value::from(a.value.clone())))
+                .collect();
+            let mut out = vec![
+                "StartTag".into(),
+                tag.name.clone().into(),
+                Value::Object(attributes),
+            ];
+            if tag.self_closing {
+                out.push(Value::Bool(true));
+            }
+            Value::Array(out)
+        }
+        Token::EndTag(tag) => Value::Array(vec!["EndTag".into(), tag.name.clone().into()]),
+        Token::Comment(data) => Value::Array(vec!["Comment".into(), data.clone().into()]),
+        Token::ProcessingInstruction { target, data } => Value::Array(vec![
+            "ProcessingInstruction".into(),
+            target.clone().into(),
+            data.clone().into(),
+        ]),
+        Token::Character(_) | Token::Eof => return None,
+    })
+}
+
+/// "Coercing an HTML DOM into an infoset" (HTML §13.2.9), applied to the
+/// token stream for `xmlViolationTests`: form feeds become spaces, other
+/// non-XML characters become U+FFFD, and comments may not contain `--` or
+/// end with `-`.
+fn coerce_to_infoset(token: &Value) -> Value {
+    fn chars(s: &str) -> String {
+        s.chars()
+            .map(|c| match c {
+                '\u{c}' => ' ',
+                '\t' | '\n' | '\r' => c,
+                c if (c as u32) < 0x20
+                    || matches!(c as u32, 0xFFFE | 0xFFFF)
+                    || (0xFDD0..=0xFDEF).contains(&(c as u32)) =>
+                {
+                    '\u{FFFD}'
+                }
+                c => c,
+            })
+            .collect()
+    }
+    let Some(items) = token.as_array() else {
+        return token.clone();
+    };
+    let kind = items.first().and_then(Value::as_str).unwrap_or_default();
+    let items = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| match item {
+            Value::String(s) if i > 0 => {
+                let mut s = chars(s);
+                if kind == "Comment" {
+                    while s.contains("--") {
+                        s = s.replace("--", "- -");
+                    }
+                    if s.ends_with('-') {
+                        s.push(' ');
+                    }
+                }
+                Value::String(s)
+            }
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().map_or(v.clone(), |v| chars(v).into())))
+                    .collect(),
+            ),
+            other => other.clone(),
+        })
+        .collect();
+    Value::Array(items)
+}
+
+fn run_tokenizer_test(test: &Value, state: &str, xml_violation: bool) -> bool {
+    let double_escaped = test.get("doubleEscaped").and_then(Value::as_bool) == Some(true);
+    let Some(input) = test.get("input").and_then(Value::as_str) else {
+        return false;
+    };
+    let input = if double_escaped {
+        match unescape(input) {
+            Some(input) => input,
+            None => return false,
+        }
+    } else {
+        input.to_string()
+    };
+    let expected = match test.get("output") {
+        Some(output) if double_escaped => match unescape_value(output) {
+            Some(output) => output,
+            None => return false,
+        },
+        Some(output) => output.clone(),
+        None => return false,
+    };
+
+    let mut tokenizer = Tokenizer::new(&input);
+    tokenizer.set_state(match state {
+        "Data state" => State::Data,
+        "PLAINTEXT state" => State::Plaintext,
+        "RCDATA state" => State::Rcdata,
+        "RAWTEXT state" => State::Rawtext,
+        "Script data state" => State::ScriptData,
+        "CDATA section state" => State::CdataSection,
+        _ => return false,
+    });
+    tokenizer.set_last_start_tag(test.get("lastStartTag").and_then(Value::as_str));
+
+    let mut actual = Vec::new();
+    let mut text = String::new();
+    loop {
+        let token = tokenizer.next_token();
+        match token {
+            Token::Character(c) => text.push(c),
+            Token::Eof => break,
+            token => {
+                if !text.is_empty() {
+                    actual.push(Value::Array(vec![
+                        "Character".into(),
+                        std::mem::take(&mut text).into(),
+                    ]));
+                }
+                if let Some(json) = token_json(&token) {
+                    actual.push(json);
+                }
+            }
+        }
+    }
+    if !text.is_empty() {
+        actual.push(Value::Array(vec!["Character".into(), text.into()]));
+    }
+    if xml_violation {
+        // These tests only describe the coerced token stream.
+        let coerced: Vec<Value> = actual.iter().map(coerce_to_infoset).collect();
+        return Value::Array(coerced) == expected;
+    }
+    if Value::Array(actual) != expected {
+        return false;
+    }
+
+    let mut expected_errors: Vec<String> = test
+        .get("errors")
+        .and_then(Value::as_array)
+        .map(|errors| {
+            errors
+                .iter()
+                .filter_map(|e| e.get("code").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut actual_errors: Vec<String> = tokenizer
+        .take_errors()
+        .iter()
+        .map(|e| e.code.to_string())
+        .collect();
+    expected_errors.sort();
+    actual_errors.sort();
+    expected_errors == actual_errors
+}
+
+// ----- Tree construction tests ----------------------------------------------
+
+/// One parsed `.dat` test.
+#[derive(Default)]
+struct TreeTest {
+    data: String,
+    fragment: Option<String>,
+    scripting: Option<bool>,
+    document: String,
+}
+
+/// Splits a `.dat` file into tests: each starts at a `#description` or
+/// `#data` line that is the first line of the file or follows an empty line.
+fn parse_dat(text: &str) -> Vec<TreeTest> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut starts = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let header = *line == "#data" || *line == "#description";
+        if header && (i == 0 || lines.get(i - 1).is_some_and(|l| l.is_empty())) {
+            starts.push(i);
+        }
+    }
+    let mut tests = Vec::new();
+    for (n, &start) in starts.iter().enumerate() {
+        let end = starts.get(n + 1).copied().unwrap_or(lines.len());
+        let block = lines.get(start..end).unwrap_or_default();
+        let mut test = TreeTest::default();
+        let mut section = "";
+        let mut data_lines = Vec::new();
+        let mut document_lines = Vec::new();
+        for line in block {
+            match *line {
+                "#description" | "#data" | "#errors" | "#new-errors" | "#document-fragment"
+                | "#document"
+                    if section != "#document" && section != "#data" || *line == "#errors" =>
+                {
+                    section = line;
+                    continue;
+                }
+                "#script-on" if section != "#document" && section != "#data" => {
+                    test.scripting = Some(true);
+                    continue;
+                }
+                "#script-off" if section != "#document" && section != "#data" => {
+                    test.scripting = Some(false);
+                    continue;
+                }
+                _ => {}
+            }
+            match section {
+                "#data" => data_lines.push(*line),
+                "#document-fragment" => test.fragment = Some((*line).to_string()),
+                "#document" => document_lines.push(*line),
+                _ => {}
+            }
+        }
+        test.data = data_lines.join("\n");
+        test.document = document_lines.join("\n").trim_end_matches('\n').to_string();
+        tests.push(test);
+    }
+    tests
+}
+
+fn fragment_context(spec: &str) -> FragmentContext {
+    let (namespace, name) = if let Some(name) = spec.strip_prefix("svg ") {
+        (Namespace::Svg, name)
+    } else if let Some(name) = spec.strip_prefix("math ") {
+        (Namespace::MathMl, name)
+    } else {
+        (Namespace::Html, spec)
+    };
+    FragmentContext {
+        namespace,
+        local_name: name.to_string(),
+        attributes: Vec::<Attribute>::new(),
+        quirks_mode: QuirksMode::NoQuirks,
+    }
+}
+
+fn run_tree_test(test: &TreeTest, scripting: bool) -> bool {
+    let options = ParseOptions { scripting };
+    let actual = match &test.fragment {
+        Some(context) => {
+            let parsed = parse_fragment(&test.data, &fragment_context(context), &options);
+            dump_tree(&parsed.document, parsed.fragment)
+        }
+        None => {
+            let parsed = parse_document(&test.data, &options);
+            dump_tree(&parsed.document, parsed.document.root())
+        }
+    };
+    let ok = actual.trim_end_matches('\n') == test.document;
+    if !ok && std::env::var_os("XTASK_SHOW").is_some() {
+        eprintln!(
+            "DATA {:?} context={:?} scripting={scripting}\nEXPECTED\n{}\nACTUAL\n{}",
+            test.data, test.fragment, test.document, actual
+        );
+    }
+    ok
+}
+
 /// One case per `#data` block in the `*.dat` files.
-fn tree_construction_cases(dir: &Path) -> Result<Vec<String>> {
+fn tree_construction_cases(dir: &Path) -> Result<Vec<Case>> {
     let mut cases = Vec::new();
     for file in files_with_extension(dir, "dat")? {
         let text = std::fs::read_to_string(&file)
             .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
         let file_name = display_name(&file);
-        let count = text.lines().filter(|line| *line == "#data").count();
-        cases.extend((0..count).map(|index| format!("{file_name}:{index}")));
+        let declared = text.lines().filter(|line| *line == "#data").count();
+        let tests = parse_dat(&text);
+        if tests.len() != declared {
+            return Err(format!(
+                "{file_name}: found {} tests but {declared} #data lines",
+                tests.len()
+            ));
+        }
+        for (index, test) in tests.iter().enumerate() {
+            let passed = match test.scripting {
+                Some(scripting) => run_tree_test(test, scripting),
+                None => run_tree_test(test, false) && run_tree_test(test, true),
+            };
+            cases.push(Case {
+                id: format!("{file_name}:{index}"),
+                passed,
+            });
+        }
     }
     Ok(cases)
 }
