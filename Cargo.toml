@@ -12,6 +12,12 @@ rust-version = "1.97"
 
 [workspace.dependencies]
 serde_json = "1"
+# wb-image decoders (see docs/components.md).
+png = { version = "0.18.1", default-features = false }
+zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
+zune-core = { version = "0.5.1", default-features = false, features = ["std"] }
+gif = { version = "0.14.2", default-features = false, features = ["std"] }
+image-webp = { version = "0.2.4", default-features = false }
 
 # Project rules from AGENTS.md, enforced by the compiler and clippy.
 [workspace.lints.rust]
