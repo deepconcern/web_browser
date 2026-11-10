@@ -8,6 +8,13 @@ code.
 | Component | Used by | License | Origin | Plan |
 |---|---|---|---|---|
 | `serde_json` | `xtask` (tooling only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
+| `url` | `wb-url` | MIT/Apache-2.0 | Servo project, standalone crate | Keep for M1; replace with our own WHATWG URL parser later |
+| Public Suffix List data (`crates/url/data/public_suffix_list.dat`, fetched 2026-11-10 from github.com/publicsuffix/list, sha256 `7bd9c547…6da4`) | `wb-url` | MPL-2.0 | Mozilla / PSL project (data, not code) | Keep; refresh periodically. Lookup algorithm is our own |
+| `hyper`, `hyper-util`, `http`, `http-body-util`, `tower-service` | `wb-net` | MIT (`http`: MIT/Apache-2.0) | Independent (hyperium) | Keep |
+| `tokio`, `bytes` | `wb-net` | MIT | Independent | Keep (runtime is private to `wb-net`) |
+| `rustls` (`ring` provider), `tokio-rustls`, `rustls-platform-verifier` | `wb-net` | Apache-2.0/ISC/MIT (`ring`: Apache-2.0 AND ISC) | Independent | Keep. No `aws-lc-rs`, no `webpki-roots` |
+| `flate2` (miniz_oxide backend) | `wb-net` | MIT/Apache-2.0 | Independent | Keep |
+| `brotli-decompressor` | `wb-net` | BSD-3-Clause/MIT | Dropbox | Keep |
 
 Planned for M1, per the spec: `url`, `hyper`, `rustls`, `cssparser` (Servo-origin,
 temporary), `fontdb`, `rustybuzz`/`harfrust`, `swash`, `image`, `rusqlite`,
