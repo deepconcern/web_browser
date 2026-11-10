@@ -68,6 +68,8 @@ pub fn fetch(root: &Path) -> Result<()> {
         }
         let dir = corpora_dir(root).join(&corpus.name);
         if current_commit(&dir).as_deref() == Some(corpus.commit.as_str()) {
+            // The sparse paths may have changed without the commit changing.
+            apply_sparse(&dir, &corpus.sparse)?;
             println!("{}: already at {}", corpus.name, corpus.commit);
             continue;
         }
@@ -83,11 +85,7 @@ pub fn fetch(root: &Path) -> Result<()> {
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         git(&dir, &["init", "--quiet"])?;
         git(&dir, &["remote", "add", "origin", &corpus.repo])?;
-        if !corpus.sparse.is_empty() {
-            let mut args = vec!["sparse-checkout", "set", "--no-cone"];
-            args.extend(corpus.sparse.iter().map(String::as_str));
-            git(&dir, &args)?;
-        }
+        apply_sparse(&dir, &corpus.sparse)?;
         let mut fetch = vec!["fetch", "--quiet", "--depth", "1"];
         if !corpus.sparse.is_empty() {
             // Only download the blobs the sparse checkout needs (WPT is huge).
@@ -98,6 +96,18 @@ pub fn fetch(root: &Path) -> Result<()> {
         git(&dir, &["checkout", "--quiet", "FETCH_HEAD"])?;
     }
     Ok(())
+}
+
+/// Sets the sparse-checkout paths, or turns sparse checkout off when there are none.
+/// In a partial clone, newly included paths are fetched on demand.
+fn apply_sparse(dir: &Path, sparse: &[String]) -> Result<()> {
+    if sparse.is_empty() {
+        git(dir, &["sparse-checkout", "disable"])
+    } else {
+        let mut args = vec!["sparse-checkout", "set", "--no-cone"];
+        args.extend(sparse.iter().map(String::as_str));
+        git(dir, &args)
+    }
 }
 
 fn current_commit(dir: &Path) -> Option<String> {

@@ -3,8 +3,9 @@
 //! Commands:
 //! - `layers`: check that every crate only depends on crates in lower layers.
 //! - `fetch-corpora`: fetch the conformance corpora at their pinned commits.
-//! - `conformance [--check | --update-baseline]`: run the conformance suites,
-//!   regenerate `docs/scorecard.md`, and compare against the baseline.
+//! - `conformance [--check [--base <baseline.json>] | --update-baseline]`: run the
+//!   conformance suites, regenerate `docs/scorecard.md`, and compare against the
+//!   committed baseline (and optionally the target branch's baseline).
 
 mod conformance;
 mod corpora;
@@ -21,7 +22,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("layers") => layers::run(&root),
         Some("fetch-corpora") => corpora::fetch(&root),
-        Some("conformance") => conformance::run(&root, args.get(1).map(String::as_str)),
+        Some("conformance") => conformance::run(&root, args.get(1..).unwrap_or_default()),
         _ => Err(usage()),
     };
     match result {
@@ -34,7 +35,8 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <layers | fetch-corpora | conformance [--check | --update-baseline]>"
+    "usage: cargo xtask <layers | fetch-corpora | \
+     conformance [--check [--base <baseline.json>] | --update-baseline]>"
         .to_string()
 }
 

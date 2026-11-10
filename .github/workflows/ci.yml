@@ -51,7 +51,17 @@ jobs:
           key: corpora-${{ hashFiles('conformance/corpora.json') }}
       - name: Fetch pinned corpora
         run: cargo xtask fetch-corpora
-      - name: Run suites and compare with baseline
-        run: cargo xtask conformance --check
+      - name: Run suites and compare with baselines
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # On PRs, also compare with the target branch's baseline so a PR
+          # can't hide a regression by lowering the committed baseline.
+          if [ -n "$BASE_REF" ] && git fetch --quiet --depth 1 origin "$BASE_REF" \
+              && git show FETCH_HEAD:conformance/baseline.json > "$RUNNER_TEMP/base-baseline.json" 2>/dev/null; then
+            cargo xtask conformance --check --base "$RUNNER_TEMP/base-baseline.json"
+          else
+            cargo xtask conformance --check
+          fi
       - name: Scorecard is up to date
         run: git diff --exit-code docs/scorecard.md

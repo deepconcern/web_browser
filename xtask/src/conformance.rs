@@ -22,7 +22,7 @@ struct SuiteResult {
     total: u64,
 }
 
-pub fn run(root: &Path, mode: Option<&str>) -> Result<()> {
+pub fn run(root: &Path, args: &[String]) -> Result<()> {
     let html5lib = corpora_dir(root).join("html5lib-tests");
     let wpt = corpora_dir(root).join("wpt");
     if !html5lib.is_dir() || !wpt.is_dir() {
@@ -52,11 +52,16 @@ pub fn run(root: &Path, mode: Option<&str>) -> Result<()> {
         .map_err(|e| format!("cannot write {}: {e}", scorecard.display()))?;
 
     let baseline_path = root.join("conformance").join("baseline.json");
-    match mode {
-        None => Ok(()),
-        Some("--check") => check_baseline(&results, &read_baseline(&baseline_path)?),
-        Some("--update-baseline") => write_baseline(&baseline_path, &results),
-        Some(other) => Err(format!("unknown conformance option {other}")),
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match args.as_slice() {
+        [] => Ok(()),
+        ["--check"] => check_baseline(&results, &read_baseline(&baseline_path)?),
+        ["--check", "--base", base] => {
+            check_baseline(&results, &read_baseline(&baseline_path)?)?;
+            check_against_base(&results, &read_baseline(Path::new(base))?)
+        }
+        ["--update-baseline"] => write_baseline(&baseline_path, &results),
+        _ => Err(format!("unknown conformance options: {}", args.join(" "))),
     }
 }
 
@@ -171,29 +176,64 @@ fn read_baseline(path: &Path) -> Result<BTreeMap<String, u64>> {
         .collect()
 }
 
+/// The committed baseline must match the results exactly: lower means a
+/// regression, higher means the baseline wasn't updated (and later losses of
+/// those passes would go unnoticed). Every baseline suite must still exist.
 fn check_baseline(results: &[SuiteResult], baseline: &BTreeMap<String, u64>) -> Result<()> {
-    let mut regressions = Vec::new();
+    let mut problems = missing_suites(results, baseline);
     for r in results {
         let expected = baseline.get(r.id).copied().unwrap_or(0);
         if r.passed < expected {
-            regressions.push(format!(
+            problems.push(format!(
                 "{}: {} passed, baseline is {expected}",
                 r.id, r.passed
             ));
         } else if r.passed > expected {
-            println!(
-                "{}: improved from {expected} to {}; run `cargo xtask conformance --update-baseline`",
+            problems.push(format!(
+                "{}: improved from {expected} to {}; run `cargo xtask conformance --update-baseline` \
+                 and commit the result",
                 r.id, r.passed
-            );
+            ));
         }
     }
-    if regressions.is_empty() {
-        println!("conformance: no regressions");
+    report(problems, "conformance: matches baseline")
+}
+
+/// Guards against a PR lowering the committed baseline itself: results may not
+/// drop below the target branch's baseline.
+fn check_against_base(results: &[SuiteResult], base: &BTreeMap<String, u64>) -> Result<()> {
+    let mut problems = missing_suites(results, base);
+    for r in results {
+        let expected = base.get(r.id).copied().unwrap_or(0);
+        if r.passed < expected {
+            problems.push(format!(
+                "{}: {} passed, target branch baseline is {expected}",
+                r.id, r.passed
+            ));
+        }
+    }
+    report(
+        problems,
+        "conformance: no regressions against the target branch",
+    )
+}
+
+fn missing_suites(results: &[SuiteResult], baseline: &BTreeMap<String, u64>) -> Vec<String> {
+    baseline
+        .keys()
+        .filter(|id| !results.iter().any(|r| r.id == id.as_str()))
+        .map(|id| format!("{id}: suite is in the baseline but produced no results"))
+        .collect()
+}
+
+fn report(problems: Vec<String>, ok_message: &str) -> Result<()> {
+    if problems.is_empty() {
+        println!("{ok_message}");
         Ok(())
     } else {
         Err(format!(
-            "conformance regressed:\n  {}",
-            regressions.join("\n  ")
+            "conformance check failed:\n  {}",
+            problems.join("\n  ")
         ))
     }
 }
@@ -228,9 +268,29 @@ mod tests {
     }
 
     #[test]
-    fn equal_or_better_passes_the_check() {
+    fn matching_baseline_passes_the_check() {
         let baseline = BTreeMap::from([("a".to_string(), 5)]);
         assert!(check_baseline(&[result("a", 5)], &baseline).is_ok());
-        assert!(check_baseline(&[result("a", 6)], &baseline).is_ok());
+    }
+
+    #[test]
+    fn stale_baseline_fails_the_check() {
+        let baseline = BTreeMap::from([("a".to_string(), 5)]);
+        assert!(check_baseline(&[result("a", 6)], &baseline).is_err());
+    }
+
+    #[test]
+    fn missing_suite_fails_the_check() {
+        let baseline = BTreeMap::from([("a".to_string(), 5), ("b".to_string(), 5)]);
+        assert!(check_baseline(&[result("a", 5)], &baseline).is_err());
+        assert!(check_against_base(&[result("a", 5)], &baseline).is_err());
+    }
+
+    #[test]
+    fn lowering_below_target_branch_fails() {
+        let base = BTreeMap::from([("a".to_string(), 5)]);
+        assert!(check_against_base(&[result("a", 4)], &base).is_err());
+        assert!(check_against_base(&[result("a", 5)], &base).is_ok());
+        assert!(check_against_base(&[result("a", 6)], &base).is_ok());
     }
 }
