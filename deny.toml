@@ -1,0 +1,59 @@
+# Dependency policy from issue #1 §4, enforced in CI with cargo-deny.
+
+[graph]
+all-features = true
+
+[licenses]
+# Only these licenses are allowed. Adding one requires an ADR.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+# The allowlist is the policy, not a list of what we use today.
+unused-allowed-license = "allow"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# No code from WebKit, Blink/Chromium, Gecko, or their JS engines, and none of
+# Servo's engine-scale components (see ADR-0001).
+deny = [
+    # Gecko / SpiderMonkey
+    { name = "mozjs" },
+    { name = "mozjs_sys" },
+    { name = "style" },
+    { name = "stylo" },
+    { name = "stylo_traits" },
+    { name = "webrender" },
+    { name = "webrender_api" },
+    # Blink / Chromium / V8
+    { name = "v8" },
+    { name = "rusty_v8" },
+    { name = "cef" },
+    { name = "chromiumoxide" },
+    # WebKit / JavaScriptCore and system webviews
+    { name = "javascriptcore-rs" },
+    { name = "webkit2gtk" },
+    { name = "wry" },
+    { name = "tauri" },
+    # Servo's engine
+    { name = "servo" },
+    { name = "libservo" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+[advisories]
+yanked = "deny"

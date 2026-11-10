@@ -1,0 +1,15 @@
+[package]
+name = "wb-url"
+description = "WHATWG URL parsing (wraps the url crate behind our own API)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.layer]
+level = 0
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "wb-ipc"
+description = "Message passing between the browser and content processes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.layer]
+level = 0
+
+[lints]
+workspace = true
