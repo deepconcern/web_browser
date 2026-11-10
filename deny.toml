@@ -2,6 +2,15 @@
 
 [graph]
 all-features = true
+# Only check the platforms we build for (ADR-0001 §11). Without this,
+# dependencies used only on other targets (e.g. wasm32) are checked too.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
 
 [licenses]
 # Only these licenses are allowed. Adding one requires an ADR.
