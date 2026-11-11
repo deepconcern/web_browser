@@ -50,10 +50,13 @@ pub(crate) fn layout_block_box(
     let bp = edges.border_padding();
     let hl = solve_width(ctx, id, &style, cb.width, &edges, mode, depth);
     let content_width = hl.content_width;
+    // A height imposed by the parent formatting context (flex items).
+    let forced_height = ctx.flex.forced(id).height;
     let specified_height = height_px(&style, cb.height, bp.vertical());
     let child_cb = ContainingBlock {
         width: content_width,
-        height: specified_height.map(|h| used_height(&style, h, cb.height, bp.vertical())),
+        height: forced_height
+            .or_else(|| specified_height.map(|h| used_height(&style, h, cb.height, bp.vertical()))),
     };
     let is_root = b.parent.is_none();
     let bfc = is_root || mode == WidthMode::ShrinkToFit || b.establishes_bfc();
@@ -65,8 +68,27 @@ pub(crate) fn layout_block_box(
         && matches!(style.height, wb_style::Size::Auto)
         && min_h <= 0.0;
 
+    let floats = float::enter_block(
+        ctx,
+        id,
+        bfc,
+        top_open,
+        &edges,
+        hl.margin_left,
+        content_width,
+    );
+    let abs = positioned::enter_box(ctx, id, &style, is_root);
     let content = layout_contents(ctx, b, id, &child_cb, depth, top_open, bottom_open);
-    let content_height = used_height(&style, content.height, cb.height, bp.vertical());
+    // CSS 2.2 §10.6.7: a BFC root's auto height includes its floats.
+    let float_bottom = float::exit_block(ctx, floats);
+    let content_height = forced_height.unwrap_or_else(|| {
+        used_height(
+            &style,
+            content.height.max(float_bottom),
+            cb.height,
+            bp.vertical(),
+        )
+    });
     let collapses_through = content.empty && top_open && bottom_open && content_height <= 0.0;
 
     // Place the contents inside the padding and border.
@@ -101,6 +123,8 @@ pub(crate) fn layout_block_box(
     );
     let mt = edges.margin.top.unwrap_or(0.0);
     let mb = edges.margin.bottom.unwrap_or(0.0);
+    let margin_origin = Point::new(hl.margin_left, mt);
+    positioned::exit_box(ctx, abs, fragment, size, edges.border, margin_origin);
     let collapsed_top = if top_open {
         CollapsedMargin::new(mt).adjoin(content.top)
     } else {
@@ -180,16 +204,30 @@ pub(crate) fn layout_block_children(
             break;
         }
         let Some(cbox) = ctx.get(child) else { continue };
-        // Hook: floats and absolutely positioned boxes leave the flow here.
-        // M1 follow-up: hand them to the float / positioning modules (both
-        // predicates return `false` until then).
-        if float::is_float(cbox) || positioned::is_absolutely_positioned(cbox) {
+        // Floats and absolutely positioned boxes leave the flow here
+        // (CSS 2.2 §9.5, §9.6), from the current flow position.
+        let flow_y = if at_top {
+            0.0
+        } else {
+            sane(y + pending.resolve())
+        };
+        if float::is_float(cbox) {
+            if let Some(f) = float::layout_float(ctx, child, cb, depth + 1, flow_y) {
+                out.children.push(f);
+            }
             continue;
         }
-        let r = layout_block_level(ctx, child, cb, depth + 1);
+        if positioned::is_absolutely_positioned(cbox) {
+            positioned::defer_absolute(ctx, child, flow_y, depth + 1);
+            continue;
+        }
+        // Clearance and float avoidance (CSS 2.2 §9.5, §9.5.2).
+        let plan = float::prepare_child(ctx, child, cb, y, pending, out.top, at_top);
+        let r = layout_block_level(ctx, child, plan.cb.as_ref().unwrap_or(cb), depth + 1);
+        let place = float::place_child(ctx, &plan, &r);
         let Some(f) = r.fragment else { continue };
         positioned::apply_relative(ctx, f, &cbox.style, cb);
-        if r.collapses_through {
+        if r.collapses_through && place.top.is_none() {
             let combined = r.collapsed_top.adjoin(r.collapsed_bottom);
             let pos = if at_top {
                 out.top = out.top.adjoin(combined);
@@ -206,7 +244,10 @@ pub(crate) fn layout_block_children(
             continue;
         }
         out.empty = false;
-        let child_y = if at_top {
+        let child_y = if let Some(top) = place.top {
+            at_top = false;
+            top
+        } else if at_top {
             out.top = out.top.adjoin(r.collapsed_top);
             at_top = false;
             y
@@ -214,7 +255,8 @@ pub(crate) fn layout_block_children(
             y + pending.adjoin(r.collapsed_top).resolve()
         };
         let child_y = sane(child_y);
-        ctx.set_position(f, Point::new(r.margin.left, child_y));
+        ctx.set_position(f, Point::new(r.margin.left + place.dx, child_y));
+        float::child_placed(ctx, child, child_y, out.top);
         out.children.push(f);
         if out.first_baseline.is_none() {
             out.first_baseline = r.first_baseline.map(|v| v + child_y);

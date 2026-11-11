@@ -6,15 +6,17 @@
 //! returns a [`LayoutResult`] whose fragment has its border box at the
 //! origin; the parent positions it with [`LayoutCtx::set_position`].
 //!
-//! Modules for later M1 work hook in here:
+//! Formatting modules:
 //!
+//! - `block` and `inline`: block and inline formatting contexts.
 //! - `table`: [`Formatting::Table`] (CSS 2.2 §17); stray
 //!   [`Formatting::TableInternal`] boxes fall back to block layout.
-//! - `flex`: [`Formatting::Flex`] (currently block layout).
-//! - `float`: floats in block and inline formatting contexts (currently
-//!   laid out in flow; the style system has already blockified them).
-//! - `positioned`: absolute and fixed positioning (currently laid out as
-//!   `static`); relative positioning is implemented there.
+//! - `flex`: [`Formatting::Flex`], flex layout.
+//! - `float`: floats and `clear` in block formatting contexts; line boxes
+//!   ask it for the room beside floats.
+//! - `positioned`: relative, absolute and fixed positioning. Block and
+//!   flex layout hand absolutely positioned children to it; positioned
+//!   containers lay them out once their size is known.
 
 pub(crate) mod block;
 pub(crate) mod flex;
@@ -149,8 +151,7 @@ pub(crate) fn layout_root(
     res
 }
 
-/// Lays out a block-level box (in-flow, or out-of-flow until the float and
-/// positioning modules land) for a containing block.
+/// Lays out an in-flow block-level box for a containing block.
 pub(crate) fn layout_block_level(
     ctx: &mut LayoutCtx<'_>,
     id: BoxId,

@@ -336,7 +336,13 @@ impl Builder<'_> {
             }
             return;
         }
-        let ids = self.fix_up_block_children(items, style);
+        // CSS Flexbox 1 §4: each contiguous run of text (inline-level
+        // content) in a flex container becomes an anonymous flex item.
+        let ids = if formatting == Formatting::Flex {
+            self.wrap_inline_runs(items, style)
+        } else {
+            self.fix_up_block_children(items, style)
+        };
         let inline = !ids.is_empty() && ids.iter().all(|i| self.is_inline(*i));
         if let Some(b) = self.tree.get_mut(id)
             && let BoxKind::Container {
@@ -408,6 +414,17 @@ impl Builder<'_> {
         if !items.iter().any(|i| matches!(i, Item::Block(_))) {
             return items.into_iter().map(item_id).collect();
         }
+        self.wrap_inline_runs(items, parent_style)
+    }
+
+    /// Wraps every run of inline-level children in an anonymous block
+    /// (dropping white-space-only runs), even when there is no block-level
+    /// sibling: the children of a flex container (CSS Flexbox 1 §4).
+    fn wrap_inline_runs(
+        &mut self,
+        items: Vec<Item>,
+        parent_style: &Arc<ComputedStyle>,
+    ) -> Vec<BoxId> {
         let mut out = Vec::new();
         let mut run: Vec<BoxId> = Vec::new();
         for item in items {
