@@ -247,7 +247,8 @@ fn png_memory_limit_checked_before_allocating() {
     assert_eq!(
         decode(&bytes),
         Err(ImageError::MemoryLimitExceeded {
-            required: 1 << 30,
+            // Output plus the decoder's rows and inflate state.
+            required: (1 << 30) + 4 * (16_384 * 8 + 1) + 128 * 1024,
             limit: Limits::DEFAULT_MAX_BYTES
         })
     );
@@ -263,7 +264,7 @@ fn png_memory_limit_checked_before_allocating() {
     assert_eq!(
         decode_with_limits(&small, &Limits::new(16_384, 100)),
         Err(ImageError::MemoryLimitExceeded {
-            required: 256,
+            required: SMALL_PNG_BUDGET,
             limit: 100
         })
     );
@@ -275,8 +276,13 @@ fn png_memory_limit_checked_before_allocating() {
             max: 4
         })
     );
-    assert!(decode_with_limits(&small, &Limits::new(8, 256)).is_ok());
+    assert!(decode_with_limits(&small, &Limits::new(8, SMALL_PNG_BUDGET)).is_ok());
+    assert!(decode_with_limits(&small, &Limits::new(8, SMALL_PNG_BUDGET - 1)).is_err());
 }
+
+/// An 8x8 PNG: 256 bytes of output, four 65-byte rows and 128 KiB of
+/// inflate state.
+const SMALL_PNG_BUDGET: usize = 256 + 4 * 65 + 128 * 1024;
 
 #[test]
 fn png_zero_size_is_an_error() {
@@ -422,21 +428,76 @@ fn jpeg_exif_orientation() {
 fn jpeg_orientation_needs_memory_for_two_buffers() {
     let base = fixture("quadrants.jpg");
     let one_buffer = 32 * 16 * 4;
-    assert!(decode_with_limits(&base, &Limits::new(64, one_buffer)).is_ok());
+    let rows = 3 * 32 * 256; // zune-jpeg's row buffers
+    let upright = one_buffer + rows;
+    assert!(decode_with_limits(&base, &Limits::new(64, upright)).is_ok());
     let rotated = with_exif(&base, &orientation_tiff(6, false));
     assert_eq!(
-        decode_with_limits(&rotated, &Limits::new(64, one_buffer)),
+        decode_with_limits(&rotated, &Limits::new(64, upright)),
         Err(ImageError::MemoryLimitExceeded {
-            required: 2 * one_buffer,
-            limit: one_buffer
+            required: 2 * one_buffer + rows,
+            limit: upright
         })
     );
+    assert!(decode_with_limits(&rotated, &Limits::new(64, 2 * one_buffer + rows)).is_ok());
     assert_eq!(
         decode_with_limits(&base, &Limits::new(16, 1 << 20)),
         Err(ImageError::DimensionsTooLarge {
             width: 32,
             height: 16,
             max: 16
+        })
+    );
+}
+
+/// Rewrites the frame size in a JPEG's SOF segment.
+fn with_jpeg_size(jpeg: &[u8], width: u16, height: u16) -> Vec<u8> {
+    let mut out = jpeg.to_vec();
+    let sof = out
+        .windows(2)
+        .position(|w| w[0] == 0xFF && matches!(w[1], 0xC0..=0xC2))
+        .unwrap();
+    // FF Cn, Lf (2), P (1), Y (2), X (2).
+    out[sof + 5..sof + 7].copy_from_slice(&height.to_be_bytes());
+    out[sof + 7..sof + 9].copy_from_slice(&width.to_be_bytes());
+    out
+}
+
+#[test]
+fn jpeg_budget_covers_decoder_buffers() {
+    // 32x16, 4:4:4, three components. Output 2048 bytes; row buffers
+    // 256 bytes per component per 32-padded column = 24576.
+    let baseline = fixture("quadrants.jpg");
+    assert_eq!(
+        decode_with_limits(&baseline, &Limits::new(64, 26_623)),
+        Err(ImageError::MemoryLimitExceeded {
+            required: 26_624,
+            limit: 26_623
+        })
+    );
+    assert!(decode_with_limits(&baseline, &Limits::new(64, 26_624)).is_ok());
+
+    // Progressive also keeps every coefficient: 3 components x 32x16
+    // samples x 2 bytes = 3072.
+    let progressive = fixture("quadrants-progressive.jpg");
+    assert_eq!(
+        decode_with_limits(&progressive, &Limits::new(64, 29_695)),
+        Err(ImageError::MemoryLimitExceeded {
+            required: 29_696,
+            limit: 29_695
+        })
+    );
+    assert!(decode_with_limits(&progressive, &Limits::new(64, 29_696)).is_ok());
+
+    // A hostile header: 4096x4096 progressive 4:4:4. The 64 MiB output
+    // fits in 128 MiB, but the 96 MiB of coefficients do not, so this must
+    // be refused before decoding starts.
+    let huge = with_jpeg_size(&progressive, 4096, 4096);
+    assert_eq!(
+        decode_with_limits(&huge, &Limits::new(16_384, 128 << 20)),
+        Err(ImageError::MemoryLimitExceeded {
+            required: (64 << 20) + (96 << 20) + 3 * 4096 * 256,
+            limit: 128 << 20
         })
     );
 }
@@ -538,12 +599,21 @@ fn gif_limits() {
         decode_with_limits(&bytes, &Limits::new(256, 1 << 20)),
         Err(ImageError::DimensionsTooLarge { width: 300, .. })
     ));
-    // Canvas 2400 bytes + frame 4 bytes.
+    // Canvas 2400 bytes + frame 4 bytes + the decoder's 1-byte-per-pixel
+    // index buffer for the frame.
     assert!(matches!(
-        decode_with_limits(&bytes, &Limits::new(1024, 2400)),
-        Err(ImageError::MemoryLimitExceeded { required: 2404, .. })
+        decode_with_limits(&bytes, &Limits::new(1024, 2404)),
+        Err(ImageError::MemoryLimitExceeded { required: 2405, .. })
     ));
-    assert!(decode_with_limits(&bytes, &Limits::new(1024, 2404)).is_ok());
+    assert!(decode_with_limits(&bytes, &Limits::new(1024, 2405)).is_ok());
+
+    // A frame that fills the canvas: output plus the index buffer.
+    let full = encode_gif((4, 4), &[(0, 0, 4, 4, &[0; 16], None)]);
+    assert!(matches!(
+        decode_with_limits(&full, &Limits::new(1024, 79)),
+        Err(ImageError::MemoryLimitExceeded { required: 80, .. })
+    ));
+    assert!(decode_with_limits(&full, &Limits::new(1024, 80)).is_ok());
 }
 
 // ---------------------------------------------------------------- WebP
@@ -609,12 +679,56 @@ fn webp_animated_first_frame() {
 
 #[test]
 fn webp_limits() {
-    let bytes = encode_webp(8, 8, image_webp::ColorType::Rgb8, &[9; 192]);
-    assert!(matches!(
-        decode_with_limits(&bytes, &Limits::new(16_384, 255)),
-        Err(ImageError::MemoryLimitExceeded { required: 256, .. })
-    ));
-    assert!(decode_with_limits(&bytes, &Limits::new(8, 256)).is_ok());
+    // Lossless RGB: image-webp decodes into a full RGBA intermediate
+    // (256 bytes) before our 256-byte output, and its transform side
+    // images get 1 byte per pixel (64).
+    let rgb = encode_webp(8, 8, image_webp::ColorType::Rgb8, &[9; 192]);
+    assert_eq!(
+        decode_with_limits(&rgb, &Limits::new(16_384, 575)),
+        Err(ImageError::MemoryLimitExceeded {
+            required: 576,
+            limit: 575
+        })
+    );
+    assert!(decode_with_limits(&rgb, &Limits::new(8, 576)).is_ok());
+
+    // Lossless RGBA decodes straight into the output.
+    let rgba = encode_webp(8, 8, image_webp::ColorType::Rgba8, &[9; 256]);
+    assert_eq!(
+        decode_with_limits(&rgba, &Limits::new(16_384, 319)),
+        Err(ImageError::MemoryLimitExceeded {
+            required: 320,
+            limit: 319
+        })
+    );
+    assert!(decode_with_limits(&rgba, &Limits::new(8, 320)).is_ok());
+}
+
+#[test]
+fn webp_budget_covers_decoder_buffers() {
+    // Lossy 32x16 RGB: output 2048 + YUV planes for 32x16 macroblocks
+    // (32*16*3/2 = 768).
+    let lossy = fixture("quadrants-lossy.webp");
+    assert_eq!(
+        decode_with_limits(&lossy, &Limits::new(64, 2815)),
+        Err(ImageError::MemoryLimitExceeded {
+            required: 2816,
+            limit: 2815
+        })
+    );
+    assert!(decode_with_limits(&lossy, &Limits::new(64, 2816)).is_ok());
+
+    // Animated 16x16: output 1024 + canvas 1024 + frame 1024 + per-frame
+    // working storage (YUV 384 + alpha 6 bytes per pixel = 1536).
+    let animated = fixture("animated.webp");
+    assert_eq!(
+        decode_with_limits(&animated, &Limits::new(64, 4991)),
+        Err(ImageError::MemoryLimitExceeded {
+            required: 4992,
+            limit: 4991
+        })
+    );
+    assert!(decode_with_limits(&animated, &Limits::new(64, 4992)).is_ok());
 }
 
 // ---------------------------------------------------------------- Common
@@ -708,9 +822,10 @@ fn corrupted_inputs_do_not_panic() {
     };
     let check = |bytes: &[u8]| {
         for result in [decode(bytes).map(|_| ()), probe(bytes).map(|_| ())] {
-            if let Err(ImageError::Malformed { message, .. }) = result {
-                assert_ne!(message, "decoder panicked", "input {bytes:?}");
-            }
+            assert!(
+                !matches!(result, Err(ImageError::DecoderPanicked { .. })),
+                "input {bytes:?}"
+            );
         }
     };
     for input in &inputs {

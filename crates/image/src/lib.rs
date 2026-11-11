@@ -147,9 +147,12 @@ impl Limits {
         self.max_dimension
     }
 
-    /// The memory budget, in bytes, for the buffers one decode allocates
-    /// (the final RGBA8 buffer plus any intermediate frame buffer). The
-    /// budget is also passed on to the underlying decoders.
+    /// The memory budget, in bytes, for the buffers one decode has alive at
+    /// its peak: the final RGBA8 buffer, our intermediate buffers, and a
+    /// conservative estimate of the decoder's own working storage
+    /// (coefficient planes, intermediate frames, row buffers), all worked
+    /// out from the headers before decoding starts. Whatever is left is
+    /// passed on to decoders that take a limit.
     #[must_use]
     pub const fn max_bytes(&self) -> usize {
         self.max_bytes
@@ -170,22 +173,32 @@ impl Limits {
         Ok(())
     }
 
-    /// Checks that `buffers` RGBA8 buffers of `width` x `height` fit in the
-    /// memory budget, and returns the size of one buffer.
-    fn check_memory(&self, width: u32, height: u32, buffers: usize) -> Result<usize, ImageError> {
-        let one = rgba_len(width, height).ok_or(ImageError::MemoryLimitExceeded {
-            required: usize::MAX,
-            limit: self.max_bytes,
-        })?;
-        let required = one.saturating_mul(buffers);
+    /// Checks that an RGBA8 output buffer of `width` x `height` plus `extra`
+    /// bytes of other buffers alive at the same time (our own and the
+    /// decoder's) fit in the memory budget. Returns the output buffer size
+    /// and the bytes of budget left over.
+    fn check_memory(
+        &self,
+        width: u32,
+        height: u32,
+        extra: usize,
+    ) -> Result<(usize, usize), ImageError> {
+        let output = rgba_len(width, height).unwrap_or(usize::MAX);
+        let required = output.saturating_add(extra);
         if required > self.max_bytes {
             return Err(ImageError::MemoryLimitExceeded {
                 required,
                 limit: self.max_bytes,
             });
         }
-        Ok(one)
+        Ok((output, self.max_bytes - required))
     }
+}
+
+/// `width * height`, saturating. For sizing decoder buffers in the
+/// memory preflight.
+fn pixel_count(width: u32, height: u32) -> usize {
+    usize::try_from(u64::from(width) * u64::from(height)).unwrap_or(usize::MAX)
 }
 
 impl Default for Limits {
@@ -229,6 +242,13 @@ pub enum ImageError {
         /// A human-readable description from the decoder, for logs.
         message: String,
     },
+    /// The third-party decoder panicked on this input. The panic was
+    /// caught; treat the image as broken. This is a decoder bug worth
+    /// reporting (and what the fuzz target looks for).
+    DecoderPanicked {
+        /// The format being decoded.
+        format: ImageFormat,
+    },
 }
 
 impl ImageError {
@@ -257,6 +277,9 @@ impl fmt::Display for ImageError {
             ),
             ImageError::Malformed { format, message } => {
                 write!(f, "malformed {} image: {message}", format.mime_type())
+            }
+            ImageError::DecoderPanicked { format } => {
+                write!(f, "the {} decoder panicked", format.mime_type())
             }
         }
     }
@@ -335,7 +358,7 @@ fn guard<T>(
     run: impl FnOnce() -> Result<T, ImageError>,
 ) -> Result<T, ImageError> {
     catch_unwind(AssertUnwindSafe(run))
-        .unwrap_or_else(|_| Err(ImageError::malformed(format, "decoder panicked")))
+        .unwrap_or_else(|_| Err(ImageError::DecoderPanicked { format }))
 }
 
 /// The byte length of a `width` x `height` RGBA8 buffer, if it fits in a
@@ -345,4 +368,42 @@ fn rgba_len(width: u32, height: u32) -> Option<usize> {
         .ok()?
         .checked_mul(usize::try_from(height).ok()?)?
         .checked_mul(4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_reports_a_panic_as_its_own_error() {
+        let result: Result<(), ImageError> = guard(ImageFormat::Gif, || panic!("decoder bug"));
+        assert_eq!(
+            result,
+            Err(ImageError::DecoderPanicked {
+                format: ImageFormat::Gif
+            })
+        );
+        assert_eq!(
+            ImageError::DecoderPanicked {
+                format: ImageFormat::Gif
+            }
+            .to_string(),
+            "the image/gif decoder panicked"
+        );
+        assert_eq!(guard(ImageFormat::Png, || Ok(7)), Ok(7));
+    }
+
+    #[test]
+    fn memory_check_reports_leftover_budget() {
+        let limits = Limits::new(100, 1000);
+        assert_eq!(limits.check_memory(10, 10, 100), Ok((400, 500)));
+        assert_eq!(
+            limits.check_memory(10, 10, 601),
+            Err(ImageError::MemoryLimitExceeded {
+                required: 1001,
+                limit: 1000
+            })
+        );
+        assert_eq!(pixel_count(3, 5), 15);
+    }
 }

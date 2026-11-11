@@ -76,9 +76,13 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, ImageError>
     let fills_canvas =
         p.left == 0 && p.top == 0 && p.width == p.canvas_width && p.height == p.canvas_height;
 
+    // To produce RGBA, the gif crate first decodes a frame's palette
+    // indices into its own buffer, 1 byte per frame pixel.
+    let frame_pixels = crate::pixel_count(p.width, p.height);
+
     if fills_canvas {
         // Common case: decode straight into the output buffer.
-        let rgba_len = limits.check_memory(p.width, p.height, 1)?;
+        let (rgba_len, _) = limits.check_memory(p.width, p.height, frame_pixels)?;
         let mut canvas = vec![0u8; rgba_len];
         decoder.read_into_buffer(&mut canvas).map_err(malformed)?;
         premultiply(&mut canvas);
@@ -86,20 +90,13 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, ImageError>
             .ok_or(ImageError::ZeroSize);
     }
 
-    // The canvas plus a separate buffer for the frame.
-    let canvas_len = limits.check_memory(p.canvas_width, p.canvas_height, 1)?;
-    let frame_len = if p.width == 0 || p.height == 0 {
-        0
-    } else {
-        limits.check_memory(p.width, p.height, 1)?
-    };
-    let required = canvas_len.saturating_add(frame_len);
-    if required > limits.max_bytes() {
-        return Err(ImageError::MemoryLimitExceeded {
-            required,
-            limit: limits.max_bytes(),
-        });
-    }
+    // The canvas plus a separate RGBA buffer for the frame.
+    let frame_len = frame_pixels.saturating_mul(4);
+    let (canvas_len, _) = limits.check_memory(
+        p.canvas_width,
+        p.canvas_height,
+        frame_len.saturating_add(frame_pixels),
+    )?;
     let mut canvas = vec![0u8; canvas_len];
     if frame_len > 0 {
         let mut frame = vec![0u8; frame_len];

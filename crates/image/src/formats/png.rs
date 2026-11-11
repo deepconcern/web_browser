@@ -35,7 +35,16 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, ImageError>
         (info.width, info.height)
     };
     limits.check_dimensions(width, height)?;
-    let rgba_len = limits.check_memory(width, height, 1)?;
+    // Our output buffer is the only image-sized allocation: the decoder
+    // writes into it and otherwise works on rows. Its working storage is
+    // the inflate window and tables, and a few rows (current, previous,
+    // output line); the crate checks only some of that against its own
+    // limit, so we budget it here and hand the decoder the rest.
+    let working = working_bytes(width);
+    let (rgba_len, remaining) = limits.check_memory(width, height, working)?;
+    decoder.set_limits(PngLimits {
+        bytes: working.saturating_add(remaining),
+    });
 
     // Palette and low-bit-depth images expand to 8-bit gray or RGB, tRNS
     // becomes an alpha channel, and 16-bit samples are reduced to 8 bits.
@@ -77,4 +86,12 @@ pub(crate) fn decode(bytes: &[u8], limits: &Limits) -> Result<Image, ImageError>
     }
     premultiply(&mut buf);
     Image::from_premultiplied_rgba8(width, height, buf).ok_or(ImageError::ZeroSize)
+}
+
+/// The decoder's working storage for an image `width` pixels wide: four
+/// rows at the widest PNG row (16-bit RGBA, 8 bytes per pixel, plus the
+/// filter byte) and 128 KiB for the inflate window and tables.
+pub(crate) fn working_bytes(width: u32) -> usize {
+    let row = crate::pixel_count(width, 8).saturating_add(1);
+    row.saturating_mul(4).saturating_add(128 * 1024)
 }
