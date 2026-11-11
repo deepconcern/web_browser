@@ -36,10 +36,18 @@
 //! - List markers (CSS Lists 3), relative positioning (CSS 2.2 §9.4.3),
 //!   overflow clipping and scroll offsets (CSS Overflow 3).
 //!
-//! Floats, tables, absolute/fixed positioning and flexbox are laid out as
-//! block containers in normal flow until their modules land (see the
-//! `M1 follow-up` notes in `formatting/`). Grid and multi-column fall back
-//! to block layout by design in M1.
+//! - Floats and `clear` (CSS 2.2 §9.5): placement, line boxes shortened
+//!   beside floats, clearance, BFC roots avoiding floats and containing
+//!   them (§10.6.7).
+//! - Absolute and fixed positioning (CSS 2.2 §9.6, §10.3.7, §10.6.4, CSS
+//!   Position 3) against the nearest positioned ancestor or the viewport;
+//!   `sticky` is laid out as `relative`. Fixed boxes scroll with the
+//!   document in M1.
+//! - Flex layout (CSS Flexbox 1 §9).
+//!
+//! Tables are laid out as block containers until their module lands (see
+//! the `M1 follow-up` notes in `formatting/`). Grid and multi-column fall
+//! back to block layout by design in M1.
 #![warn(missing_docs)]
 
 mod box_tree;

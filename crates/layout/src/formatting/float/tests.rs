@@ -357,3 +357,17 @@ fn thousands_of_floats_lay_out_quickly() {
     assert!(l.tree.len() > 3000);
     assert!(start.elapsed().as_secs() < 20, "took {:?}", start.elapsed());
 }
+
+#[test]
+fn flex_item_contains_its_floats() {
+    let l = lay(
+        r#"<div id=c><div id=item><div id=f></div>x</div></div>"#,
+        &format!(
+            "{RESET} #c {{ display: flex; align-items: flex-start }} #item {{ width: 100px }} \
+             #f {{ float: left; width: 20px; height: 50px }}"
+        ),
+    );
+    // A flex item is an independent formatting context: its auto height
+    // includes its float.
+    assert_eq!(l.rect("item").height, 50.0);
+}

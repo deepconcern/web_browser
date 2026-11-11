@@ -63,8 +63,14 @@ struct AbsEntry {
     /// The block container the box would have been laid out in.
     parent: BoxId,
     /// The static position: the hypothetical margin-box top-left corner
-    /// in `parent`'s content box.
+    /// in `parent`'s content box (the start of `area` when aligned).
     local: Point,
+    /// The static position's alignment in `area`, per axis (0 = start,
+    /// 0.5 = centre, 1 = end), applied once the box's size is known: the
+    /// static position of an absolutely positioned child of a flex
+    /// container (CSS Flexbox 1 §4.1).
+    align: Point,
+    area: Size,
     fixed: bool,
     depth: usize,
 }
@@ -123,13 +129,49 @@ pub(crate) fn defer_absolute(ctx: &mut LayoutCtx<'_>, child: BoxId, y_local: f32
     let Some(b) = ctx.get(child) else { return };
     let Some(parent) = b.parent else { return };
     let fixed = matches!(b.style.position, Position::Fixed);
-    let entry = AbsEntry {
-        id: child,
-        parent,
-        local: Point::new(0.0, sane(y_local)),
-        fixed,
-        depth,
-    };
+    push_entry(
+        ctx,
+        AbsEntry {
+            id: child,
+            parent,
+            local: Point::new(0.0, sane(y_local)),
+            align: Point::ZERO,
+            area: Size::new(0.0, 0.0),
+            fixed,
+            depth,
+        },
+    );
+}
+
+/// Records absolutely positioned `child` of a flex container (CSS Flexbox
+/// 1 §4.1): its static position is that of the sole flex item, aligned
+/// by `align` (per-axis fractions, see [`AbsEntry::align`]) in the
+/// container's content box of size `area`.
+pub(crate) fn defer_absolute_aligned(
+    ctx: &mut LayoutCtx<'_>,
+    child: BoxId,
+    area: Size,
+    align: Point,
+    depth: usize,
+) {
+    let Some(b) = ctx.get(child) else { return };
+    let Some(parent) = b.parent else { return };
+    push_entry(
+        ctx,
+        AbsEntry {
+            id: child,
+            parent,
+            local: Point::ZERO,
+            align: Point::new(align.x.clamp(0.0, 1.0), align.y.clamp(0.0, 1.0)),
+            area,
+            fixed: matches!(b.style.position, Position::Fixed),
+            depth,
+        },
+    );
+}
+
+fn push_entry(ctx: &mut LayoutCtx<'_>, entry: AbsEntry) {
+    let fixed = entry.fixed;
     let frames = &mut ctx.abs.frames;
     let frame = if fixed {
         frames.first_mut().filter(|f| f.is_root)
@@ -187,6 +229,18 @@ pub(crate) fn exit_box(
         if batch.is_empty() {
             break;
         }
+        // A box laid out more than once (e.g. measured, then laid out by a
+        // flex container) was recorded each time: the last record wins.
+        let mut last: HashMap<BoxId, usize> = HashMap::with_capacity(batch.len());
+        for (i, e) in batch.iter().enumerate() {
+            last.insert(e.id, i);
+        }
+        let batch: Vec<AbsEntry> = batch
+            .into_iter()
+            .enumerate()
+            .filter(|(i, e)| last.get(&e.id) == Some(i))
+            .map(|(_, e)| e)
+            .collect();
         let needed: HashSet<BoxId> = batch.iter().map(|e| e.parent).collect();
         // Only the root's search enters nested containing blocks: fixed
         // boxes inside them belong to it.
@@ -203,7 +257,12 @@ pub(crate) fn exit_box(
                 parent.x + e.local.x - cb_origin.x,
                 parent.y + e.local.y - cb_origin.y,
             );
-            let Some((f, p)) = layout_absolute(ctx, e.id, cb_size, stat, e.depth) else {
+            let place = StaticPos {
+                at: stat,
+                align: e.align,
+                area: e.area,
+            };
+            let Some((f, p)) = layout_absolute(ctx, e.id, cb_size, place, e.depth) else {
                 continue;
             };
             let at = Point::new(sane(cb_origin.x + p.x), sane(cb_origin.y + p.y));
@@ -285,8 +344,13 @@ struct Axis {
     m_end: Option<f32>,
     bp: f32,
     cb: f32,
-    /// The static position of the margin edge.
+    /// The static position of the margin edge (the start of the
+    /// alignment area when `stat_align` is not 0).
     stat: f32,
+    /// Where the margin box goes in the static-position area of size
+    /// `stat_area` (0 = start, 1 = end).
+    stat_align: f32,
+    stat_area: f32,
     /// Horizontal (left-to-right): negative equal auto margins become
     /// `margin-left: 0`.
     horizontal: bool,
@@ -306,11 +370,19 @@ fn solve_axis(a: Axis, auto_size: &mut dyn FnMut(f32) -> f32) -> AxisSolution {
     let ms0 = a.m_start.unwrap_or(0.0);
     let me0 = a.m_end.unwrap_or(0.0);
     let free = |used: f32| a.cb - used - ms0 - me0 - a.bp;
+    // The static position once the size is known (CSS Flexbox 1 §4.1).
+    let stat = |size: f32| {
+        if a.stat_align == 0.0 {
+            a.stat
+        } else {
+            a.stat + a.stat_align * (a.stat_area - (ms0 + me0 + a.bp + size))
+        }
+    };
     let (start, size, m_start) = match (a.start, a.size, a.end) {
         // All three auto: the static position, then rule 3.
         (None, None, None) => {
             let size = auto_size(free(a.stat));
-            (a.stat, size, ms0)
+            (stat(size), size, ms0)
         }
         // None auto: auto margins take the rest; over-constrained ignores
         // the end inset.
@@ -336,7 +408,7 @@ fn solve_axis(a: Axis, auto_size: &mut dyn FnMut(f32) -> f32) -> AxisSolution {
             (a.cb - e - ms0 - me0 - a.bp - size, size, ms0)
         }
         // Rule 2: start and end auto.
-        (None, Some(w), None) => (a.stat, w, ms0),
+        (None, Some(w), None) => (stat(w), w, ms0),
         // Rule 3: size and end auto.
         (Some(s), None, None) => {
             let size = auto_size(free(s));
@@ -388,7 +460,16 @@ fn insets(style: &ComputedStyle, cb: Size) -> (Option<f32>, Option<f32>, Option<
     )
 }
 
-fn axes(edges: &BoxEdges, style: &ComputedStyle, cb: Size, stat: Point) -> (Axis, Axis) {
+/// The static position of an absolutely positioned box, relative to its
+/// containing block's padding box.
+#[derive(Clone, Copy, Debug)]
+struct StaticPos {
+    at: Point,
+    align: Point,
+    area: Size,
+}
+
+fn axes(edges: &BoxEdges, style: &ComputedStyle, cb: Size, stat: StaticPos) -> (Axis, Axis) {
     let (left, right, top, bottom) = insets(style, cb);
     let bp = edges.border_padding();
     (
@@ -400,7 +481,9 @@ fn axes(edges: &BoxEdges, style: &ComputedStyle, cb: Size, stat: Point) -> (Axis
             m_end: edges.margin.right,
             bp: bp.horizontal(),
             cb: cb.width,
-            stat: stat.x,
+            stat: stat.at.x,
+            stat_align: stat.align.x,
+            stat_area: stat.area.width,
             horizontal: true,
         },
         Axis {
@@ -411,7 +494,9 @@ fn axes(edges: &BoxEdges, style: &ComputedStyle, cb: Size, stat: Point) -> (Axis
             m_end: edges.margin.bottom,
             bp: bp.vertical(),
             cb: cb.height,
-            stat: stat.y,
+            stat: stat.at.y,
+            stat_align: stat.align.y,
+            stat_area: stat.area.height,
             horizontal: false,
         },
     )
@@ -425,7 +510,7 @@ fn layout_absolute(
     ctx: &mut LayoutCtx<'_>,
     id: BoxId,
     cb: Size,
-    stat: Point,
+    stat: StaticPos,
     depth: usize,
 ) -> Option<(FragmentId, Point)> {
     let b = ctx.get(id)?;

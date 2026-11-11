@@ -180,8 +180,8 @@ pub(crate) enum FloatScope {
     Root,
     /// The box takes part in its parent's BFC.
     Frame(BoxId),
-    /// The box was laid out outside block flow: its floats are kept to
-    /// itself.
+    /// The box was laid out outside block flow (a flex item, ...): its
+    /// floats are kept to itself, as in a BFC root.
     Isolated,
 }
 
@@ -318,11 +318,10 @@ pub(crate) fn exit_block(ctx: &mut LayoutCtx<'_>, scope: FloatScope) -> f32 {
                 .pop()
                 .and_then(|b| b.excl.bottom())
                 .unwrap_or(0.0);
-            if matches!(scope, FloatScope::Root) {
-                sane(bottom).max(0.0)
-            } else {
-                0.0
-            }
+            // An isolated box (a flex item, ...) is laid out outside any
+            // block flow, as an independent formatting context: its floats
+            // count toward its height like a BFC root's.
+            sane(bottom).max(0.0)
         }
     }
 }
