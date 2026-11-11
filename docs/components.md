@@ -8,6 +8,8 @@ code.
 | Component | Used by | License | Origin | Plan |
 |---|---|---|---|---|
 | `serde_json` | `xtask` (tooling only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
+| `rusqlite` (with `libsqlite3-sys`, `bundled`) | `wb-storage` | MIT (bundled SQLite C library: public domain) | Independent | Keep |
+| `tempfile` | `wb-storage` (dev-dependency, tests only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
 | `url` | `wb-url` | MIT/Apache-2.0 | Servo project, standalone crate | Keep for M1; replace with our own WHATWG URL parser later |
 | Public Suffix List data (`crates/url/data/public_suffix_list.dat`, fetched 2026-11-10 from github.com/publicsuffix/list, sha256 `7bd9c547…6da4`) | `wb-url` | MPL-2.0 | Mozilla / PSL project (data, not code) | Keep; refresh periodically. Lookup algorithm is our own |
 | `hyper`, `hyper-util`, `http`, `http-body-util`, `tower-service` | `wb-net` | MIT (`http`: MIT/Apache-2.0) | Independent (hyperium) | Keep |
