@@ -7,8 +7,11 @@
 //!   (session history, URL bar input, form controls and submission).
 #![warn(missing_docs)]
 
+pub mod content;
 pub mod engine;
+pub mod filters;
 pub mod forms;
 pub mod history;
 pub mod omnibox;
+pub mod profile;
 pub mod selection;

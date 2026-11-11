@@ -235,6 +235,9 @@ pub enum ToContent {
     CopySelection,
     /// Select the whole document.
     SelectAll,
+    /// The user picked option `index` in the drop-down opened by
+    /// [`ToBrowser::OpenSelect`], or dismissed it (`None`).
+    ChooseOption(Option<usize>),
     /// Stop the content thread.
     Shutdown,
 }
@@ -254,6 +257,12 @@ pub struct Frame {
     pub content_size: (f32, f32),
     /// The viewport the frame was drawn for.
     pub viewport: Viewport,
+    /// Selection highlight rectangles, `[x, y, width, height]` in document
+    /// CSS px, for the UI to draw over the pixels.
+    pub highlights: Vec<[f32; 4]>,
+    /// The focused form control's border box (document CSS px), for a
+    /// focus ring.
+    pub focus_ring: Option<[f32; 4]>,
 }
 
 impl fmt::Debug for Frame {
@@ -352,6 +361,17 @@ pub enum ToBrowser {
     Navigate(NavigationRequest),
     /// The selected text, answering [`ToContent::CopySelection`].
     Copied(String),
+    /// Show a drop-down for a `<select>`; answer with
+    /// [`ToContent::ChooseOption`].
+    OpenSelect {
+        /// The control's border box, `[x, y, width, height]` in viewport
+        /// CSS px.
+        rect: [f32; 4],
+        /// The option labels.
+        options: Vec<String>,
+        /// The selected option indices.
+        selected: Vec<usize>,
+    },
 }
 
 /// Wakes the UI's event loop when a message arrives.
