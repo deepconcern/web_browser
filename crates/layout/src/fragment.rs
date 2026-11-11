@@ -227,7 +227,11 @@ pub struct Fragment {
     /// The box this fragment was generated from (`None` for line boxes).
     pub box_id: Option<BoxId>,
     /// The computed style (for line boxes and text, the containing box's
-    /// style).
+    /// style). For table parts it is adjusted for paint: with
+    /// `border-collapse: collapse` a cell's (and the table's) borders are
+    /// the resolved collapsed borders at half width; rows, row groups and
+    /// columns carry no borders; hidden empty cells no decorations. See
+    /// the table module docs (`formatting/table/mod.rs`).
     pub style: Arc<ComputedStyle>,
     /// The border box, absolute. For text it is the text's content area
     /// (ascent to descent, start to end advance).

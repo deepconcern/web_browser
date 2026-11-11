@@ -8,8 +8,8 @@
 //!
 //! Modules for later M1 work hook in here:
 //!
-//! - `table`: [`Formatting::Table`] / [`Formatting::TableInternal`]
-//!   (currently block layout).
+//! - `table`: [`Formatting::Table`] (CSS 2.2 §17); stray
+//!   [`Formatting::TableInternal`] boxes fall back to block layout.
 //! - `flex`: [`Formatting::Flex`] (currently block layout).
 //! - `float`: floats in block and inline formatting contexts (currently
 //!   laid out in flow; the style system has already blockified them).

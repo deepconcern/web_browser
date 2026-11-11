@@ -13,6 +13,7 @@
 //! [`LayoutBox::formatting`] and the box's style.
 
 mod build;
+mod table;
 
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use wb_dom::NodeId;
 use wb_style::{ComputedStyle, PseudoElement};
 
 pub(crate) use build::build_box_tree;
+pub(crate) use table::Span;
 
 /// The deepest nesting of boxes the tree builder produces. Content nested
 /// deeper is dropped (and [`BoxTree::truncated`] is set): this bounds the
@@ -67,12 +69,11 @@ pub enum Formatting {
     /// formatting context: `inline-block`, `overflow` other than `visible`,
     /// the root element, ...). See [`LayoutBox::establishes_bfc`].
     FlowRoot,
-    /// `table` / `inline-table`.
-    // M1 follow-up: the table module lays these out; until then they are
-    // laid out as block containers.
+    /// `table` / `inline-table` (laid out by the table module, CSS 2.2
+    /// §17; the box tree is fixed up per §17.2.1 so that table-internal
+    /// boxes always sit inside a table).
     Table,
     /// A table-internal box (`table-row`, `table-cell`, ...).
-    // M1 follow-up: laid out as a block container until tables land.
     TableInternal(wb_style::DisplayInternal),
     /// `flex` / `inline-flex`.
     // M1 follow-up: the flex module lays these out; until then they are
@@ -284,6 +285,9 @@ pub struct BoxTree {
     pub(crate) root: Option<BoxId>,
     pub(crate) truncated: bool,
     pub(crate) viewport_overflow: (wb_style::Overflow, wb_style::Overflow),
+    /// `colspan`/`rowspan` of cells and `span` of columns (HTML §4.9.11,
+    /// §4.9.3), for boxes whose values are not 1.
+    pub(crate) table_spans: std::collections::HashMap<BoxId, table::Span>,
 }
 
 impl Default for BoxTree {
@@ -293,6 +297,7 @@ impl Default for BoxTree {
             root: None,
             truncated: false,
             viewport_overflow: (wb_style::Overflow::Visible, wb_style::Overflow::Visible),
+            table_spans: std::collections::HashMap::new(),
         }
     }
 }

@@ -93,6 +93,7 @@ pub(crate) fn build_box_tree(doc: &Document, styles: &StyledDocument) -> BoxTree
     } else {
         b.tree.root = root_box;
     }
+    super::table::fix_up_tables(&mut b.tree, doc);
     b.tree
 }
 
@@ -661,15 +662,12 @@ fn classify(display: Display) -> Option<(Level, Formatting, bool)> {
             Some((level, formatting, list_item))
         }
         Display::Internal(internal) => match internal {
-            // Columns hold no content (CSS 2.2 §17.2); without table
-            // layout they generate nothing.
-            DisplayInternal::TableColumn | DisplayInternal::TableColumnGroup => None,
             DisplayInternal::RubyBase
             | DisplayInternal::RubyText
             | DisplayInternal::RubyBaseContainer
             | DisplayInternal::RubyTextContainer => Some((Level::Inline, Formatting::Flow, false)),
-            // M1 follow-up: anonymous table wrappers (CSS 2.2 §17.2.1);
-            // table-internal boxes are block containers until then.
+            // Table-internal boxes (columns too) are fixed up into
+            // tables by `super::table` (CSS 2.2 §17.2.1).
             other => Some((Level::Block, Formatting::TableInternal(other), false)),
         },
     }

@@ -36,7 +36,13 @@
 //! - List markers (CSS Lists 3), relative positioning (CSS 2.2 §9.4.3),
 //!   overflow clipping and scroll offsets (CSS Overflow 3).
 //!
-//! Floats, tables, absolute/fixed positioning and flexbox are laid out as
+//! - Tables (CSS 2.2 §17, CSS Tables 3 column widths): anonymous table
+//!   objects, captions, `colspan`/`rowspan`, automatic and fixed table
+//!   layout, both border models (collapsed borders are resolved onto the
+//!   cell fragments' styles, see `formatting/table`), `empty-cells`, cell
+//!   `vertical-align`.
+//!
+//! Floats, absolute/fixed positioning and flexbox are laid out as
 //! block containers in normal flow until their modules land (see the
 //! `M1 follow-up` notes in `formatting/`). Grid and multi-column fall back
 //! to block layout by design in M1.

@@ -296,6 +296,9 @@ pub(crate) fn compute_intrinsic(
     let Some(b) = ctx.get(id) else {
         return IntrinsicSizes::default();
     };
+    if b.formatting() == Some(crate::box_tree::Formatting::Table) {
+        return super::table::intrinsic(ctx, id, depth);
+    }
     let style = &b.style;
     let edges = box_edges(style, 0.0);
     let bp = edges.border_padding().horizontal();
