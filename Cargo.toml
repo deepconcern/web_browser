@@ -14,6 +14,7 @@ rust-version = "1.97"
 serde_json = "1"
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 tempfile = "3.27.0"
+cssparser = { version = "0.38.0", default-features = false }
 encoding_rs = { version = "0.8.35", default-features = false, features = ["alloc"] }
 
 # Project rules from AGENTS.md, enforced by the compiler and clippy.
@@ -31,3 +32,9 @@ unimplemented = "deny"
 unreachable = "deny"
 indexing_slicing = "deny"
 dbg_macro = "deny"
+
+# Optimised, smaller binaries for releases (see .github/workflows/release.yml).
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

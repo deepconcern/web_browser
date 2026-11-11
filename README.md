@@ -44,6 +44,27 @@ cargo xtask fetch-corpora
 cargo xtask conformance --check  # regenerates docs/scorecard.md
 ```
 
+## Releasing
+
+Releases are built by `.github/workflows/release.yml` for x86_64 Linux.
+
+1. Bump `version` under `[workspace.package]` in `Cargo.toml` (e.g. to
+   `0.1.0`), run `cargo build` to update `Cargo.lock`, and merge that to
+   `main`.
+2. Tag the merge commit and push the tag:
+   ```sh
+   git tag -a v0.1.0 -m "web_browser 0.1.0"
+   git push origin v0.1.0
+   ```
+3. The workflow checks that the tag matches the workspace version, runs the
+   CI gate, builds `web_browser` in release mode and publishes a GitHub
+   Release with `web_browser-<version>-x86_64-linux.tar.gz` and `SHA256SUMS`.
+   A version with a suffix (e.g. `0.1.0-beta.1`) becomes a pre-release.
+
+To try it without releasing, run the workflow by hand from the Actions tab
+(`workflow_dispatch`): it uploads the tarball and checksums as a workflow
+artifact instead.
+
 ## Layout
 
 | Path | What |
