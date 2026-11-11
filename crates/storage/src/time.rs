@@ -13,6 +13,23 @@ pub(crate) fn to_millis(t: SystemTime) -> i64 {
     }
 }
 
+/// Like [`to_millis`], but rounds a fractional millisecond up (towards
+/// positive infinity) instead of truncating.
+pub(crate) fn to_millis_ceil(t: SystemTime) -> i64 {
+    match t.duration_since(UNIX_EPOCH) {
+        Ok(d) => {
+            let ms = to_millis(t);
+            if d.subsec_nanos() % 1_000_000 == 0 {
+                ms
+            } else {
+                ms.saturating_add(1)
+            }
+        }
+        // Before the epoch, truncating towards zero already rounds up.
+        Err(_) => to_millis(t),
+    }
+}
+
 /// The inverse of [`to_millis`]. Values the platform cannot represent clamp
 /// to the epoch, which only matters for corrupt data.
 pub(crate) fn from_millis(ms: i64) -> SystemTime {
@@ -34,6 +51,17 @@ mod tests {
         for ms in [0, 1, -1, 1_700_000_000_123, -86_400_000] {
             assert_eq!(to_millis(from_millis(ms)), ms);
         }
+    }
+
+    #[test]
+    fn ceil_rounds_up() {
+        let t = UNIX_EPOCH + Duration::from_nanos(1_500_000);
+        assert_eq!(to_millis_ceil(t), 2);
+        assert_eq!(to_millis_ceil(UNIX_EPOCH + Duration::from_millis(7)), 7);
+        let before = UNIX_EPOCH - Duration::from_nanos(1_500_000);
+        assert_eq!(to_millis(before), -1);
+        assert_eq!(to_millis_ceil(before), -1);
+        assert_eq!(to_millis_ceil(UNIX_EPOCH - Duration::from_millis(3)), -3);
     }
 
     #[test]

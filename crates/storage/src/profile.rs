@@ -99,7 +99,8 @@ impl Profile {
         conn.execute_batch(
             "PRAGMA foreign_keys = ON;
              PRAGMA secure_delete = ON;
-             PRAGMA trusted_schema = OFF;",
+             PRAGMA trusted_schema = OFF;
+             PRAGMA temp_store = MEMORY;",
         )
         .db()?;
         schema::migrate(&conn)?;
@@ -354,6 +355,11 @@ mod tests {
             schema::current_version(&profile.conn).unwrap(),
             schema::SCHEMA_VERSION
         );
+        let temp_store: i64 = profile
+            .conn
+            .query_row("PRAGMA temp_store", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(temp_store, 2, "temporary tables stay in memory");
         profile.settings().set_default_zoom(1.5).unwrap();
         assert_eq!(profile.settings().default_zoom().unwrap(), 1.5);
     }
@@ -379,10 +385,7 @@ mod tests {
             .unwrap();
         assert_eq!(entry.visit_count, 2);
         assert_eq!(entry.title.as_deref(), Some("Old"));
-        let hits = profile
-            .history()
-            .suggest("old", SystemTime::now(), 5)
-            .unwrap();
+        let hits = profile.history().suggest("old", 5).unwrap();
         assert_eq!(hits.len(), 1);
     }
 

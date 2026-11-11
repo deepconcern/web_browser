@@ -29,6 +29,10 @@ pub enum StorageError {
     },
     /// A value passed in was out of range or malformed.
     InvalidValue(String),
+    /// History was cleared, but another connection kept SQLite from
+    /// truncating its write-ahead log, so deleted data may remain on disk
+    /// until the next checkpoint. Retrying later finishes the job.
+    WalNotTruncated,
     /// A file system operation failed.
     Io {
         /// The path the operation was about.
@@ -57,6 +61,9 @@ impl fmt::Display for StorageError {
                 "the profile uses schema version {found}, but this build only supports up to {supported}"
             ),
             Self::InvalidValue(what) => write!(f, "invalid value: {what}"),
+            Self::WalNotTruncated => f.write_str(
+                "history was cleared, but the database log could not be truncated yet; try again",
+            ),
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Database(e) => write!(f, "database error: {e}"),
         }

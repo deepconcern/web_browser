@@ -10,10 +10,19 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::{DbResult, Result, StorageError};
 
+/// One schema step: SQL, then optionally a Rust step for data that SQL alone
+/// can't compute. Both run in the same transaction.
+struct Migration {
+    sql: &'static str,
+    post: Option<fn(&Connection) -> Result<()>>,
+}
+
 /// Migration `n` (1-based) brings the schema from version `n - 1` to `n`.
-const MIGRATIONS: &[&str] = &[
-    // v1: settings, site lists, filter lists, cookies and history.
-    "
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        post: None,
+        // v1: settings, site lists, filter lists, cookies and history.
+        sql: "
     CREATE TABLE settings (
         key   TEXT PRIMARY KEY NOT NULL,
         value TEXT NOT NULL
@@ -57,27 +66,37 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX history_by_last_visit ON history (last_visit_ms);
     ",
-    // v2: one row per visit, so history can be deleted by time range and
-    // ranked by frecency. Existing entries get `visit_count` visits at their
-    // last visit time, which keeps the counts consistent.
-    "
+    },
+    Migration {
+        post: Some(crate::history::refresh_all),
+        // v2: one row per visit (with the title seen on that visit), so
+        // history can be deleted by time range without leaving traces, and a
+        // stored frecency key for ranking. Existing entries get
+        // `visit_count` visits at their last visit time, which keeps the
+        // counts consistent; `post` then computes every frecency key.
+        sql: "
+    ALTER TABLE history ADD COLUMN frecency_key REAL NOT NULL DEFAULT 0;
+
     CREATE TABLE visits (
         id         INTEGER PRIMARY KEY,
         history_id INTEGER NOT NULL REFERENCES history (id) ON DELETE CASCADE,
-        visit_ms   INTEGER NOT NULL
+        visit_ms   INTEGER NOT NULL,
+        title      TEXT
     );
     CREATE INDEX visits_by_history ON visits (history_id, visit_ms);
     CREATE INDEX visits_by_time ON visits (visit_ms);
 
-    WITH RECURSIVE expand (history_id, visit_ms, remaining) AS (
-        SELECT id, last_visit_ms, visit_count FROM history WHERE visit_count > 0
+    WITH RECURSIVE expand (history_id, visit_ms, title, remaining) AS (
+        SELECT id, last_visit_ms, title, visit_count FROM history WHERE visit_count > 0
         UNION ALL
-        SELECT history_id, visit_ms, remaining - 1 FROM expand WHERE remaining > 1
+        SELECT history_id, visit_ms, title, remaining - 1 FROM expand WHERE remaining > 1
     )
-    INSERT INTO visits (history_id, visit_ms) SELECT history_id, visit_ms FROM expand;
+    INSERT INTO visits (history_id, visit_ms, title)
+        SELECT history_id, visit_ms, title FROM expand;
 
     DELETE FROM history WHERE visit_count <= 0;
     ",
+    },
 ];
 
 /// The schema version this build creates and understands.
@@ -117,13 +136,16 @@ pub(crate) fn migrate_to(conn: &Connection, target: i64) -> Result<()> {
             supported: SCHEMA_VERSION,
         });
     }
-    for (index, sql) in MIGRATIONS.iter().enumerate() {
+    for (index, migration) in MIGRATIONS.iter().enumerate() {
         let version = i64::try_from(index).unwrap_or(i64::MAX).saturating_add(1);
         if version <= found || version > target {
             continue;
         }
         let tx = conn.unchecked_transaction().db()?;
-        tx.execute_batch(sql).db()?;
+        tx.execute_batch(migration.sql).db()?;
+        if let Some(post) = migration.post {
+            post(&tx)?;
+        }
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
              DELETE FROM schema_version;",
@@ -195,6 +217,23 @@ mod tests {
                 ("https://b.example/".to_owned(), 2000),
             ]
         );
+        // Titles move onto the visits, and frecency keys are computed.
+        let titled: i64 = conn
+            .query_row("SELECT count(*) FROM visits WHERE title = 'A'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(titled, 3);
+        let keys: Vec<f64> = conn
+            .prepare("SELECT frecency_key FROM history ORDER BY url")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(keys.len(), 2);
+        // Three visits outrank one visit a second later.
+        assert!(keys[0] > keys[1], "{keys:?}");
         let setting: String = conn
             .query_row(
                 "SELECT value FROM settings WHERE key = 'blocker.enabled'",
