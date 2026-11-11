@@ -11,5 +11,8 @@ publish = false
 [package.metadata.layer]
 level = 1
 
+[dependencies]
+cssparser.workspace = true
+
 [lints]
 workspace = true

@@ -15,6 +15,7 @@ code.
 | `rustls` (`ring` provider), `tokio-rustls`, `rustls-platform-verifier` | `wb-net` | Apache-2.0/ISC/MIT (`ring`: Apache-2.0 AND ISC) | Independent | Keep. No `aws-lc-rs`, no `webpki-roots` |
 | `flate2` (miniz_oxide backend) | `wb-net` | MIT/Apache-2.0 | Independent | Keep |
 | `brotli-decompressor` | `wb-net` | BSD-3-Clause/MIT | Dropbox | Keep |
+| `cssparser` 0.38 (default features off; pulls `dtoa-short`, `dtoa`, `itoa`, `smallvec`) | `wb-css` (tokenizer only, private) | MPL-2.0 (deps MIT/Apache-2.0, MPL-2.0) | Servo | Temporary scaffolding: replace with our own CSS Syntax 3 tokenizer |
 | `encoding_rs` | `wb-html` (decoding and charset labels) | (Apache-2.0 OR MIT) AND BSD-3-Clause | Independent crate (written for Gecko, standalone; implements the WHATWG Encoding Standard) | Keep for now; replace only if we write our own Encoding Standard decoders |
 | WHATWG `entities.json` (data) | `wb-html` (named character reference table, generated into `src/entities.rs`) | CC BY 4.0 (HTML Living Standard) | WHATWG specification data | Keep (spec data, not code) |
 
