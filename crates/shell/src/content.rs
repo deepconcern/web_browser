@@ -276,7 +276,7 @@ impl ContentTab {
                 let failure = match e {
                     LoadError::Net(NetError::HttpsUpgradeFailed(f)) => LoadFailure::HttpsUpgradeFailed {
                         site: f.site.to_string(),
-                        host: f.url.host_str().unwrap_or("").to_string(),
+                        host: f.site.host().map(ToString::to_string).unwrap_or_default(),
                         reason: f.reason.clone(),
                     },
                     LoadError::Net(e) => LoadFailure::Network(e.to_string()),
