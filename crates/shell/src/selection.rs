@@ -100,9 +100,13 @@ fn pieces<'t>(tree: &'t FragmentTree, order: &TreeOrder, sel: &Selection) -> Vec
         return out;
     }
     for frag in tree.fragments() {
-        let FragmentKind::Text(t) = &frag.kind else { continue };
+        let FragmentKind::Text(t) = &frag.kind else {
+            continue;
+        };
         let Some(node) = frag.node else { continue };
-        let Some(&k) = order.0.get(&node) else { continue };
+        let Some(&k) = order.0.get(&node) else {
+            continue;
+        };
         if k < start.0 || k > end.0 {
             continue;
         }
@@ -111,7 +115,9 @@ fn pieces<'t>(tree: &'t FragmentTree, order: &TreeOrder, sel: &Selection) -> Vec
             key >= start && key < end
         };
         // The selected rendered byte range of this fragment.
-        let Some(shown) = t.text.get(t.range.clone()) else { continue };
+        let Some(shown) = t.text.get(t.range.clone()) else {
+            continue;
+        };
         let mut lo = None;
         let mut hi = t.range.start;
         for (i, c) in shown.char_indices() {
@@ -122,7 +128,9 @@ fn pieces<'t>(tree: &'t FragmentTree, order: &TreeOrder, sel: &Selection) -> Vec
             }
         }
         let Some(lo) = lo else { continue };
-        let Some(text) = t.text.get(lo..hi) else { continue };
+        let Some(text) = t.text.get(lo..hi) else {
+            continue;
+        };
         let b = frag.border_box;
         let rects = t
             .runs
@@ -237,24 +245,38 @@ mod tests {
         let order = TreeOrder::new(doc);
         let tree = page.fragment_tree().unwrap();
         let all = Selection::all(doc).unwrap();
-        assert_eq!(selected_text(tree, &order, &all), "Hello brave new world\nSecond para");
+        assert_eq!(
+            selected_text(tree, &order, &all),
+            "Hello brave new world\nSecond para"
+        );
         let t1 = doc.first_child(doc.element_by_id("a").unwrap()).unwrap();
         let b = doc.element_by_id("b").unwrap();
         let t2 = doc.first_child(b).unwrap();
         // From "brave" (offset 8) to before "cond" (offset 2), backwards.
         let sel = Selection {
-            anchor: Caret { node: t2, offset: 2 },
-            focus: Caret { node: t1, offset: 8 },
+            anchor: Caret {
+                node: t2,
+                offset: 2,
+            },
+            focus: Caret {
+                node: t1,
+                offset: 8,
+            },
         };
         assert_eq!(selected_text(tree, &order, &sel), "brave new world\nSe");
-        let collapsed = Selection { anchor: sel.focus, focus: sel.focus };
+        let collapsed = Selection {
+            anchor: sel.focus,
+            focus: sel.focus,
+        };
         assert!(collapsed.is_collapsed());
         assert_eq!(selected_text(tree, &order, &collapsed), "");
         if !fonts.is_empty() {
             let rects = highlight_rects(tree, &order, &sel);
             assert!(rects.len() >= 2, "{rects:?}");
             // Hit testing a point in "world" yields a caret in t1.
-            let hit = page.hit_test(Point::new(rects[0].0 + 2.0, rects[0].1 + 5.0)).unwrap();
+            let hit = page
+                .hit_test(Point::new(rects[0].0 + 2.0, rects[0].1 + 5.0))
+                .unwrap();
             assert_eq!(hit.node, Some(t1));
             assert!(hit.text_offset.is_some());
         }

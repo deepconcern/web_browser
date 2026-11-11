@@ -13,14 +13,14 @@ code.
 | `gif` | `wb-image` | MIT/Apache-2.0 (dep `weezl` MIT/Apache-2.0) | image-rs project | Keep for M1 |
 | `image-webp` | `wb-image` | MIT/Apache-2.0 (deps MIT/Apache-2.0) | image-rs project | Keep for M1 |
 | `regex` | `wb-blocker` (`/regex/` network filters) | MIT/Apache-2.0 (deps: `regex-automata`, `regex-syntax` MIT/Apache-2.0; `aho-corasick`, `memchr` Unlicense OR MIT) | Independent (rust-lang) | Keep |
-| `fontdb` | `wb-text` | MIT | Independent | Keep for now; replace with our own font directory scan + fontconfig config reader later |
+| `fontdb` | `wb-text`, `wb-shell` (finding installed fonts for the egui UI, which has its bundled fonts off) | MIT | Independent | Keep for now; replace with our own font directory scan + fontconfig config reader later |
 | `harfrust` | `wb-text` | MIT | HarfBuzz project (Rust port of HarfBuzz) | Keep (text shaping); pinned to 0.12 to share `read-fonts` 0.41 with `swash` |
 | `swash` | `wb-text` | Apache-2.0/MIT | Independent | Keep (glyph scaling and rasterization) |
 | `unicode-linebreak` | `wb-text` | Apache-2.0 | Independent | Keep (UAX #14 data and pair table) |
 | `unicode-script` | `wb-text` | MIT/Apache-2.0 | Independent | Keep (Script property data) |
 | `unicode-bidi` | `wb-text` | MIT/Apache-2.0 | Servo project, standalone crate | Temporary scaffolding; replace with our own UAX #9 when full bidi lands |
 | `rusqlite` (with `libsqlite3-sys`, `bundled`) | `wb-storage` | MIT (bundled SQLite C library: public domain) | Independent | Keep |
-| `tempfile` | `wb-storage` (dev-dependency, tests only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
+| `tempfile` | `wb-storage`, `wb-shell` (dev-dependency, tests only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
 | `url` | `wb-url` | MIT/Apache-2.0 | Servo project, standalone crate | Keep for M1; replace with our own WHATWG URL parser later |
 | Public Suffix List data (`crates/url/data/public_suffix_list.dat`, fetched 2026-11-10 from github.com/publicsuffix/list, sha256 `7bd9c547…6da4`) | `wb-url` | MPL-2.0 | Mozilla / PSL project (data, not code) | Keep; refresh periodically. Lookup algorithm is our own |
 | `hyper`, `hyper-util`, `http`, `http-body-util`, `tower-service` | `wb-net` | MIT (`http`: MIT/Apache-2.0) | Independent (hyperium) | Keep |
@@ -33,6 +33,10 @@ code.
 | WHATWG `entities.json` (data) | `wb-html` (named character reference table, generated into `src/entities.rs`) | CC BY 4.0 (HTML Living Standard) | WHATWG specification data | Keep (spec data, not code) |
 | WHATWG HTML §15 Rendering UA stylesheet (adapted) | `wb-style` (`src/ua/html.css`, `src/ua/quirks.css`) | CC BY 4.0 (HTML Living Standard) | WHATWG specification text | Keep (spec data, not code); attribution in the file header |
 | `tiny-skia` 0.12 (features `std`, `simd`; pulls `tiny-skia-path`, `arrayref`, `arrayvec`, `bytemuck`, `cfg-if`, `log`, `strict-num`) | `wb-paint` (rasterizer, private) | BSD-3-Clause (deps: `arrayref` BSD-2-Clause, `strict-num` MIT, others MIT/Apache-2.0 or Zlib/Apache-2.0/MIT) | Independent (linebender; Rust port of a subset of Skia's raster backend, not Chromium code) | Keep for M1 (ADR-0002); a `vello` GPU backend may come later, with tiny-skia kept as the reference renderer |
+| `winit` 0.30 (features `x11`, `wayland`, `wayland-dlopen`, `wayland-csd-adwaita-notitle`, `rwh_06`) | `wb-shell` (windows and input) | Apache-2.0 (deps MIT/Apache-2.0, MIT, ISC, Zlib) | Independent (rust-windowing) | Keep |
+| `wgpu` 30 (features `vulkan`, `metal`, `dx12`, `gles`, `wgsl`; pulls `wgpu-core`, `wgpu-hal`, `wgpu-types`, `naga`) | `wb-shell` (presenting the UI and page frames) | MIT/Apache-2.0 | Independent (gfx-rs) | Keep |
+| `egui`, `egui-winit`, `egui-wgpu` 0.37 (default features off: no bundled fonts, which are OFL/UFL; `egui-winit` with `smithay-clipboard`, MIT) | `wb-shell` (browser chrome: tabs, toolbar, settings, first-run screen) | MIT/Apache-2.0 | Independent (emilk) | Keep for M1; the page itself is rendered by our engine, egui only draws the chrome |
+| `pollster` 0.4 | `wb-shell` (blocking on wgpu adapter and device setup) | MIT/Apache-2.0 | Independent | Keep |
 
 Planned for M1, per the spec: `url`, `hyper`, `rustls`, `cssparser` (Servo-origin,
 temporary), `fontdb`, `rustybuzz`/`harfrust`, `swash`, `image`, `rusqlite`,

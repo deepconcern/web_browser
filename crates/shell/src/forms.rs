@@ -16,7 +16,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use wb_dom::{Document, NodeId};
-use wb_ipc::{NavigationMethod, NavigationRequest, Url};
+use wb_ipc::{NavigationMethod, NavigationRequest};
+use wb_url::Url;
 
 /// The most entries a form submission may carry; more are dropped.
 const MAX_ENTRIES: usize = 10_000;
@@ -75,9 +76,28 @@ fn attr<'d>(doc: &'d Document, n: NodeId, name: &str) -> Option<&'d str> {
 #[must_use]
 pub fn input_type(doc: &Document, n: NodeId) -> String {
     const KNOWN: [&str; 22] = [
-        "hidden", "text", "search", "tel", "url", "email", "password", "date", "month", "week",
-        "time", "datetime-local", "number", "range", "color", "checkbox", "radio", "file",
-        "submit", "image", "reset", "button",
+        "hidden",
+        "text",
+        "search",
+        "tel",
+        "url",
+        "email",
+        "password",
+        "date",
+        "month",
+        "week",
+        "time",
+        "datetime-local",
+        "number",
+        "range",
+        "color",
+        "checkbox",
+        "radio",
+        "file",
+        "submit",
+        "image",
+        "reset",
+        "button",
     ];
     let t = attr(doc, n, "type").unwrap_or("text").to_ascii_lowercase();
     if KNOWN.contains(&t.as_str()) {
@@ -101,9 +121,7 @@ fn is_submittable(doc: &Document, n: NodeId) -> bool {
 #[must_use]
 pub fn form_owner(doc: &Document, n: NodeId) -> Option<NodeId> {
     if let Some(id) = attr(doc, n, "form") {
-        return doc
-            .element_by_id(id)
-            .filter(|&f| is_html(doc, f, "form"));
+        return doc.element_by_id(id).filter(|&f| is_html(doc, f, "form"));
     }
     doc.ancestors(n).find(|&a| is_html(doc, a, "form"))
 }
@@ -119,9 +137,7 @@ pub fn is_disabled(doc: &Document, n: NodeId) -> bool {
     let mut child = n;
     for a in doc.ancestors(n) {
         if is_html(doc, a, "fieldset") && attr(doc, a, "disabled").is_some() {
-            let first_legend = doc
-                .element_children(a)
-                .find(|&c| is_html(doc, c, "legend"));
+            let first_legend = doc.element_children(a).find(|&c| is_html(doc, c, "legend"));
             if first_legend != Some(child) {
                 return true;
             }
@@ -175,7 +191,10 @@ pub fn select_options(doc: &Document, select: NodeId) -> Vec<NodeId> {
         if is_html(doc, c, "option") {
             out.push(c);
         } else if is_html(doc, c, "optgroup") {
-            out.extend(doc.element_children(c).filter(|&o| is_html(doc, o, "option")));
+            out.extend(
+                doc.element_children(c)
+                    .filter(|&o| is_html(doc, o, "option")),
+            );
         }
     }
     out
@@ -317,7 +336,10 @@ pub fn form_data_set(doc: &Document, form: NodeId, submitter: Option<NodeId>) ->
                 }
             }
         } else if matches!(ty.as_str(), "checkbox" | "radio") {
-            out.push(text(name, attr(doc, n, "value").unwrap_or("on").to_string()));
+            out.push(text(
+                name,
+                attr(doc, n, "value").unwrap_or("on").to_string(),
+            ));
         } else if ty == "file" {
             out.push(Entry {
                 name: name.to_string(),
@@ -409,7 +431,10 @@ pub fn encode_multipart(entries: &[Entry], boundary: &str) -> Option<Vec<u8>> {
     let mut out = String::new();
     for e in entries {
         let name = escape(&crlf(&e.name));
-        let _ = write!(out, "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"");
+        let _ = write!(
+            out,
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\""
+        );
         match &e.value {
             EntryValue::Text(t) => {
                 let _ = write!(out, "\r\n\r\n{}\r\n", crlf(t));
@@ -467,7 +492,7 @@ pub fn submission(
         .map(str::to_ascii_lowercase);
     let entries = form_data_set(doc, form, submitter);
     let nav_method = match (action.scheme(), method) {
-        ("http" | "https" | "data", "get") => {
+        ("http" | "https" | "data" | "file", "get") => {
             // "Mutate action URL": the query becomes the serialization.
             let mut s = action.without_fragment().as_str().to_string();
             if let Some(q) = s.find('?') {
@@ -480,7 +505,7 @@ pub fn submission(
                 s.push_str(f);
             }
             return Some(NavigationRequest {
-                initiator: Some(doc_url.clone()),
+                initiator: Some(doc_url.to_string()),
                 ..NavigationRequest::user(Url::parse(&s).ok()?)
             });
         }
@@ -512,13 +537,14 @@ pub fn submission(
     };
     Some(NavigationRequest {
         method: nav_method,
-        initiator: Some(doc_url.clone()),
+        initiator: Some(doc_url.to_string()),
         ..NavigationRequest::user(action)
     })
 }
 
 /// What activating (clicking) an element does.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)] // returned once per click
 pub enum Activation {
     /// Nothing.
     None,
@@ -565,8 +591,14 @@ impl FormState {
         }
         let d = if is_html(doc, n, "textarea") {
             Initial::Text(text_value(doc, n))
-        } else if is_html(doc, n, "option") || matches!(input_type(doc, n).as_str(), "checkbox" | "radio") {
-            let name = if is_html(doc, n, "option") { "selected" } else { "checked" };
+        } else if is_html(doc, n, "option")
+            || matches!(input_type(doc, n).as_str(), "checkbox" | "radio")
+        {
+            let name = if is_html(doc, n, "option") {
+                "selected"
+            } else {
+                "checked"
+            };
             Initial::Checked(attr(doc, n, name).is_some())
         } else {
             Initial::Value(attr(doc, n, "value").map(str::to_string))
@@ -593,7 +625,9 @@ impl FormState {
     /// unless it is `multiple`, where the option is toggled).
     pub fn select_option(&mut self, doc: &mut Document, select: NodeId, index: usize) {
         let options = select_options(doc, select);
-        let Some(&chosen) = options.get(index) else { return };
+        let Some(&chosen) = options.get(index) else {
+            return;
+        };
         if option_disabled(doc, chosen) {
             return;
         }
@@ -627,14 +661,20 @@ impl FormState {
             })
             .collect();
         for n in owned {
-            let Some(d) = self.defaults.remove(&n) else { continue };
+            let Some(d) = self.defaults.remove(&n) else {
+                continue;
+            };
             match d {
                 Initial::Text(t) => {
                     self.set_text_value(doc, n, &t);
                     self.defaults.remove(&n);
                 }
                 Initial::Checked(on) => {
-                    let name = if is_html(doc, n, "option") { "selected" } else { "checked" };
+                    let name = if is_html(doc, n, "option") {
+                        "selected"
+                    } else {
+                        "checked"
+                    };
                     set_bool_attr(doc, n, name, on);
                 }
                 Initial::Value(v) => {
@@ -909,7 +949,7 @@ line2</textarea>
         assert!(s.contains("&b=bv&"), "{s}");
         assert!(s.ends_with("&outside=o#frag"), "{s}");
         assert!(!s.contains("old=1"));
-        assert_eq!(req.initiator, Some(url("https://a.test/dir/page")));
+        assert_eq!(req.initiator.as_deref(), Some("https://a.test/dir/page"));
     }
 
     #[test]
@@ -985,36 +1025,64 @@ line2</textarea>
 
     #[test]
     fn activation() {
-        let mut d = doc(
-            "<form id=f action=/s><input type=checkbox id=c name=c>\
+        let mut d = doc("<form id=f action=/s><input type=checkbox id=c name=c>\
              <label id=l><span id=sp>tick</span><input type=checkbox id=c2 name=c2></label>\
              <input type=radio name=r id=r1 checked><input type=radio name=r id=r2>\
              <input id=t name=t value=v><select id=sel name=sel><option>a<option>b</select>\
-             <input type=reset id=reset><input type=submit id=sub disabled></form>",
-        );
+             <input type=reset id=reset><input type=submit id=sub disabled></form>");
         let u = url("https://a.test/");
         let mut st = FormState::default();
-        assert_eq!({ let n = id(&d, "c"); st.activate(&mut d, n, &u, &u) }, Activation::Changed);
+        assert_eq!(
+            {
+                let n = id(&d, "c");
+                st.activate(&mut d, n, &u, &u)
+            },
+            Activation::Changed
+        );
         assert!(d.attribute(id(&d, "c"), "checked").is_some());
-        assert_eq!({ let n = id(&d, "sp"); st.activate(&mut d, n, &u, &u) }, Activation::Changed);
+        assert_eq!(
+            {
+                let n = id(&d, "sp");
+                st.activate(&mut d, n, &u, &u)
+            },
+            Activation::Changed
+        );
         assert!(d.attribute(id(&d, "c2"), "checked").is_some());
-        { let n = id(&d, "r2"); st.activate(&mut d, n, &u, &u) };
+        {
+            let n = id(&d, "r2");
+            st.activate(&mut d, n, &u, &u)
+        };
         assert!(d.attribute(id(&d, "r1"), "checked").is_none());
         assert!(d.attribute(id(&d, "r2"), "checked").is_some());
         let t = id(&d, "t");
         assert_eq!(st.activate(&mut d, t, &u, &u), Activation::Focus(t));
         st.set_text_value(&mut d, t, "typed");
         let sel = id(&d, "sel");
-        assert_eq!(st.activate(&mut d, sel, &u, &u), Activation::OpenSelect(sel));
+        assert_eq!(
+            st.activate(&mut d, sel, &u, &u),
+            Activation::OpenSelect(sel)
+        );
         st.select_option(&mut d, sel, 1);
         assert_eq!(selected_options(&d, sel).len(), 1);
         assert_eq!(option_value(&d, selected_options(&d, sel)[0]), "b");
-        assert_eq!({ let n = id(&d, "sub"); st.activate(&mut d, n, &u, &u) }, Activation::None);
+        assert_eq!(
+            {
+                let n = id(&d, "sub");
+                st.activate(&mut d, n, &u, &u)
+            },
+            Activation::None
+        );
         // Implicit submission: no enabled default button? The disabled
         // default button blocks it.
         assert_eq!(implicit_submission(&d, t, &u, &u), None);
         // Reset restores everything.
-        assert_eq!({ let n = id(&d, "reset"); st.activate(&mut d, n, &u, &u) }, Activation::Changed);
+        assert_eq!(
+            {
+                let n = id(&d, "reset");
+                st.activate(&mut d, n, &u, &u)
+            },
+            Activation::Changed
+        );
         assert!(d.attribute(id(&d, "c"), "checked").is_none());
         assert!(d.attribute(id(&d, "r1"), "checked").is_some());
         assert!(d.attribute(id(&d, "r2"), "checked").is_none());
@@ -1030,7 +1098,9 @@ line2</textarea>
         assert_eq!(req.url.as_str(), "https://a.test/s?a=1");
         let d = doc("<form><input id=a name=a><input name=b></form>");
         assert_eq!(implicit_submission(&d, id(&d, "a"), &u, &u), None);
-        let d = doc("<form action=/s><input id=a name=a><input name=b><button name=go value=1>x</button></form>");
+        let d = doc(
+            "<form action=/s><input id=a name=a><input name=b><button name=go value=1>x</button></form>",
+        );
         let req = implicit_submission(&d, id(&d, "a"), &u, &u).unwrap();
         assert_eq!(req.url.as_str(), "https://a.test/s?a=&b=&go=1");
     }

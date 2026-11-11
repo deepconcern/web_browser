@@ -117,7 +117,7 @@ pub fn save(profile_dir: &Path, id: &str, text: &str) -> Result<(), FilterError>
 pub fn is_due(last: Option<SystemTime>, now: SystemTime) -> bool {
     match last {
         None => true,
-        Some(t) => now.duration_since(t).map_or(false, |d| d >= UPDATE_INTERVAL),
+        Some(t) => now.duration_since(t).is_ok_and(|d| d >= UPDATE_INTERVAL),
     }
 }
 

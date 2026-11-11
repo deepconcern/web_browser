@@ -11,8 +11,11 @@ use wb_ipc::{
     NavigationRequest, PointerButton, Received, ToBrowser, ToContent, Viewport,
 };
 use wb_net::{CacheMode, NetError, Request, RequestContext};
+use wb_url::Url;
 
-use crate::engine::{ElementState, Engine, LoadError, LoadObserver, LoadStage, Page, Point, RenderOptions};
+use crate::engine::{
+    ElementState, Engine, LoadError, LoadObserver, LoadStage, Page, Point, RenderOptions,
+};
 use crate::forms::{self, Activation, FormState};
 use crate::selection::{self, Caret, Selection, TreeOrder};
 
@@ -24,7 +27,11 @@ const LINE_SCROLL: f32 = 40.0;
 /// # Errors
 ///
 /// When the OS can't start a thread.
-pub fn spawn(engine: Engine, end: ContentEnd, viewport: Viewport) -> std::io::Result<JoinHandle<()>> {
+pub fn spawn(
+    engine: Engine,
+    end: ContentEnd,
+    viewport: Viewport,
+) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name("content".into())
         .spawn(move || ContentTab::new(engine, end, viewport).run())
@@ -65,7 +72,7 @@ pub struct ContentTab {
     pressed: Option<NodeId>,
     open_select: Option<NodeId>,
     hover: Option<NodeId>,
-    hover_link: Option<wb_ipc::Url>,
+    hover_link: Option<Url>,
     cursor: CursorKind,
     /// The last frame's pixels, reused when only overlays change.
     last: Option<Frame>,
@@ -140,7 +147,9 @@ impl ContentTab {
                     self.needs_render = true;
                 }
             }
-            ToContent::ScrollBy { dx, dy } => self.scroll_to(self.scroll.0 + dx, self.scroll.1 + dy),
+            ToContent::ScrollBy { dx, dy } => {
+                self.scroll_to(self.scroll.0 + dx, self.scroll.1 + dy)
+            }
             ToContent::ScrollTo { x, y } => self.scroll_to(x, y),
             ToContent::Input(e) => self.input(e),
             ToContent::CopySelection => {
@@ -188,7 +197,13 @@ impl ContentTab {
             .as_ref()
             .and_then(Page::content_size)
             .map_or((vw, vh), |s| (s.width, s.height));
-        let clamp = |v: f32, max: f32| if v.is_finite() { v.clamp(0.0, max.max(0.0)) } else { 0.0 };
+        let clamp = |v: f32, max: f32| {
+            if v.is_finite() {
+                v.clamp(0.0, max.max(0.0))
+            } else {
+                0.0
+            }
+        };
         let new = (clamp(x, cw - vw).round(), clamp(y, ch - vh).round());
         if new != self.scroll {
             self.scroll = new;
@@ -198,15 +213,24 @@ impl ContentTab {
 
     fn navigate(&mut self, req: NavigationRequest) {
         let end = &self.end;
+        // URLs cross the channel serialized; re-parse them here.
+        let Ok(url) = Url::parse(&req.url) else {
+            end.send(ToBrowser::LoadFailed {
+                url: req.url,
+                failure: LoadFailure::Network("The address isn't a valid URL.".into()),
+            });
+            return;
+        };
+        let initiator = req.initiator.as_deref().and_then(|u| Url::parse(u).ok());
         // A fragment navigation within the current document only scrolls
         // (HTML §7.4.2.3.3 "navigate to a fragment").
         if let Some(page) = &self.page
             && req.method == NavigationMethod::Get
             && !req.reload
-            && req.url.fragment().is_some()
-            && req.url.without_fragment() == page.url().without_fragment()
+            && url.fragment().is_some()
+            && url.without_fragment() == page.url().without_fragment()
         {
-            let pos = page.fragment_position(req.url.fragment().unwrap_or(""));
+            let pos = page.fragment_position(url.fragment().unwrap_or(""));
             end.send(ToBrowser::LoadCommitted {
                 url: req.url.clone(),
                 title: page.title().to_string(),
@@ -222,12 +246,12 @@ impl ContentTab {
             url: req.url.clone(),
         });
         let mut request = Request::with_context(
-            req.url.clone(),
+            url.clone(),
             RequestContext::Navigation {
-                initiator: req.initiator.as_ref().map(wb_url::Url::site),
+                initiator: initiator.as_ref().map(Url::site),
             },
         );
-        request.referrer = req.initiator.clone();
+        request.referrer = initiator;
         if req.reload {
             request.cache_mode = CacheMode::NoCache;
         }
@@ -240,7 +264,7 @@ impl ContentTab {
         match self.engine.load_request(request, &observer) {
             Ok(page) => {
                 end.send(ToBrowser::LoadCommitted {
-                    url: page.url().clone(),
+                    url: page.url().to_string(),
                     title: page.title().to_string(),
                     blocked_requests: page.blocked_requests(),
                 });
@@ -255,7 +279,7 @@ impl ContentTab {
                 self.scroll = (0.0, 0.0);
                 // Lay out once so fragment and scroll restoration work.
                 self.render();
-                let target = match (req.restore_scroll, req.url.fragment()) {
+                let target = match (req.restore_scroll, url.fragment()) {
                     (Some((x, y)), _) => Some((x, y)),
                     (None, Some(f)) => self
                         .page
@@ -274,11 +298,13 @@ impl ContentTab {
             }
             Err(e) => {
                 let failure = match e {
-                    LoadError::Net(NetError::HttpsUpgradeFailed(f)) => LoadFailure::HttpsUpgradeFailed {
-                        site: f.site.to_string(),
-                        host: f.site.host().map(ToString::to_string).unwrap_or_default(),
-                        reason: f.reason.clone(),
-                    },
+                    LoadError::Net(NetError::HttpsUpgradeFailed(f)) => {
+                        LoadFailure::HttpsUpgradeFailed {
+                            site: f.site.to_string(),
+                            host: f.site.host().map(ToString::to_string).unwrap_or_default(),
+                            reason: f.reason.clone(),
+                        }
+                    }
                     LoadError::Net(e) => LoadFailure::Network(e.to_string()),
                     LoadError::Blocked { filter } => LoadFailure::Blocked { filter },
                     LoadError::UnsupportedContentType(t) => LoadFailure::UnsupportedContentType(t),
@@ -301,7 +327,9 @@ impl ContentTab {
 
     fn render(&mut self) {
         let mut options = self.render_options();
-        let Some(page) = self.page.as_mut() else { return };
+        let Some(page) = self.page.as_mut() else {
+            return;
+        };
         let mut raster = page.render(&options);
         // Re-clamp the scroll position now the content size is known.
         if let Some(size) = page.content_size() {
@@ -314,7 +342,11 @@ impl ContentTab {
                 raster = page.render(&options);
             }
         }
-        if page.has_pending_images() && self.engine.load_pending_images(page, &Observer { end: &self.end }) {
+        if page.has_pending_images()
+            && self
+                .engine
+                .load_pending_images(page, &Observer { end: &self.end })
+        {
             raster = page.render(&options);
         }
         let Ok(raster) = raster else { return };
@@ -350,7 +382,9 @@ impl ContentTab {
         let (Some(page), Some(sel)) = (&self.page, &self.selection) else {
             return Vec::new();
         };
-        let Some(tree) = page.fragment_tree() else { return Vec::new() };
+        let Some(tree) = page.fragment_tree() else {
+            return Vec::new();
+        };
         let order = TreeOrder::new(page.document());
         selection::highlight_rects(tree, &order, sel)
             .into_iter()
@@ -373,7 +407,9 @@ impl ContentTab {
         let (Some(page), Some(sel)) = (&self.page, &self.selection) else {
             return String::new();
         };
-        let Some(tree) = page.fragment_tree() else { return String::new() };
+        let Some(tree) = page.fragment_tree() else {
+            return String::new();
+        };
         selection::selected_text(tree, &TreeOrder::new(page.document()), sel)
     }
 
@@ -413,7 +449,12 @@ impl ContentTab {
                     self.needs_overlay = true;
                 }
                 // Start a selection on text that is not inside a link.
-                let caret = hit.and_then(|h| Some(Caret { node: h.node?, offset: h.text_offset? }));
+                let caret = hit.and_then(|h| {
+                    Some(Caret {
+                        node: h.node?,
+                        offset: h.text_offset?,
+                    })
+                });
                 let in_link = self.pressed.and_then(|n| page.link_element(n)).is_some();
                 if let Some(c) = caret
                     && !in_link
@@ -423,7 +464,10 @@ impl ContentTab {
                     {
                         sel.focus = c;
                     } else {
-                        self.selection = Some(Selection { anchor: c, focus: c });
+                        self.selection = Some(Selection {
+                            anchor: c,
+                            focus: c,
+                        });
                     }
                     self.selecting = true;
                     self.needs_overlay = true;
@@ -439,9 +483,13 @@ impl ContentTab {
             } => {
                 self.selecting = false;
                 let p = self.doc_point(x, y);
-                let Some(pressed) = self.pressed.take() else { return };
+                let Some(pressed) = self.pressed.take() else {
+                    return;
+                };
                 let Some(page) = &self.page else { return };
-                let Some(now) = page.hit_test(p).and_then(|h| h.node) else { return };
+                let Some(now) = page.hit_test(p).and_then(|h| h.node) else {
+                    return;
+                };
                 if now != pressed || self.selection.is_some_and(|s| !s.is_collapsed()) {
                     return;
                 }
@@ -450,14 +498,17 @@ impl ContentTab {
             InputEvent::KeyDown { key, modifiers } => self.key(key, modifiers),
             InputEvent::Text(t) => {
                 let Some(focus) = self.focus else { return };
-                let Some(page) = self.page.as_mut() else { return };
+                let Some(page) = self.page.as_mut() else {
+                    return;
+                };
                 let mut value = forms::text_value(page.document(), focus);
                 let typed: String = t.chars().filter(|c| !c.is_control()).collect();
                 if typed.is_empty() {
                     return;
                 }
                 value.push_str(&typed);
-                self.forms.set_text_value(page.document_mut(), focus, &value);
+                self.forms
+                    .set_text_value(page.document_mut(), focus, &value);
                 self.needs_render = true;
             }
         }
@@ -495,7 +546,10 @@ impl ContentTab {
                     || doc.is_html_element(el, "select")
                     || doc.is_html_element(el, "label")
                     || (doc.is_html_element(el, "input")
-                        && matches!(forms::input_type(doc, el).as_str(), "checkbox" | "radio" | "reset" | "button"))
+                        && matches!(
+                            forms::input_type(doc, el).as_str(),
+                            "checkbox" | "radio" | "reset" | "button"
+                        ))
                 {
                     CursorKind::Pointer
                 } else if hit.is_some_and(|h| h.text_offset.is_some()) {
@@ -508,7 +562,8 @@ impl ContentTab {
         };
         if link != self.hover_link {
             self.hover_link = link.clone();
-            self.end.send(ToBrowser::HoverLink(link));
+            self.end
+                .send(ToBrowser::HoverLink(link.map(|l| l.to_string())));
         }
         if cursor != self.cursor {
             self.cursor = cursor;
@@ -535,13 +590,18 @@ impl ContentTab {
     }
 
     fn click(&mut self, node: NodeId, button: PointerButton, modifiers: wb_ipc::Modifiers) {
-        let Some(page) = self.page.as_mut() else { return };
+        let Some(page) = self.page.as_mut() else {
+            return;
+        };
         if let Some(link) = page.link_element(node)
-            && let Some(url) = page.document().attribute(link, "href").and_then(|h| page.resolve(h))
+            && let Some(url) = page
+                .document()
+                .attribute(link, "href")
+                .and_then(|h| page.resolve(h))
         {
             let new_tab = button == PointerButton::Middle || modifiers.ctrl || modifiers.meta;
             let mut req = NavigationRequest::user(url);
-            req.initiator = Some(page.url().clone());
+            req.initiator = Some(page.url().to_string());
             req.new_tab = new_tab;
             self.end.send(ToBrowser::Navigate(req));
             return;
@@ -552,7 +612,9 @@ impl ContentTab {
         let doc_url = page.url().clone();
         let base = page.base_url().clone();
         let el = element_of(page, node);
-        let activation = self.forms.activate(page.document_mut(), el, &doc_url, &base);
+        let activation = self
+            .forms
+            .activate(page.document_mut(), el, &doc_url, &base);
         match activation {
             Activation::None => {
                 // `activate` may have mutated nothing; the cache was
@@ -569,7 +631,10 @@ impl ContentTab {
                 let doc = page.document();
                 let options = forms::select_options(doc, s);
                 let selected = forms::selected_options(doc, s);
-                let labels = options.iter().map(|&o| forms::option_label(doc, o)).collect();
+                let labels = options
+                    .iter()
+                    .map(|&o| forms::option_label(doc, o))
+                    .collect();
                 let selected = options
                     .iter()
                     .enumerate()
@@ -624,7 +689,12 @@ impl ContentTab {
                     return;
                 }
                 // M1 follow-up: a movable caret inside text fields.
-                Key::ArrowLeft | Key::ArrowRight | Key::Home | Key::End | Key::Delete | Key::Space => return,
+                Key::ArrowLeft
+                | Key::ArrowRight
+                | Key::Home
+                | Key::End
+                | Key::Delete
+                | Key::Space => return,
                 _ => {}
             }
         }
@@ -640,11 +710,7 @@ impl ContentTab {
             Key::PageUp | Key::Space => self.scroll_to(x, y - vh * 0.9),
             Key::Home => self.scroll_to(x, 0.0),
             Key::End => self.scroll_to(x, f32::MAX),
-            Key::Escape => {
-                if self.selection.take().is_some() {
-                    self.needs_overlay = true;
-                }
-            }
+            Key::Escape if self.selection.take().is_some() => self.needs_overlay = true,
             _ => {}
         }
     }
@@ -665,7 +731,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use wb_ipc::{BrowserEnd, Modifiers, Url};
+    use wb_ipc::{BrowserEnd, Modifiers};
 
     use super::*;
     use crate::engine::LocalFetcher;
@@ -706,47 +772,101 @@ mod tests {
         let (b, t) = setup(&[("https://a.test/", PAGE)]);
         let url = Url::parse("https://a.test/").unwrap();
         b.send(ToContent::Navigate(NavigationRequest::user(url.clone())));
-        assert_eq!(wait(&b, |m| matches!(m, ToBrowser::LoadStarted { .. })), ToBrowser::LoadStarted { url: url.clone() });
-        let ToBrowser::LoadCommitted { url: u, .. } = wait(&b, |m| matches!(m, ToBrowser::LoadCommitted { .. })) else {
+        assert_eq!(
+            wait(&b, |m| matches!(m, ToBrowser::LoadStarted { .. })),
+            ToBrowser::LoadStarted {
+                url: url.to_string()
+            }
+        );
+        let ToBrowser::LoadCommitted { url: u, .. } =
+            wait(&b, |m| matches!(m, ToBrowser::LoadCommitted { .. }))
+        else {
             panic!()
         };
-        assert_eq!(u, url);
-        let ToBrowser::Frame(f) = wait(&b, |m| matches!(m, ToBrowser::Frame(_))) else { panic!() };
+        assert_eq!(u, url.as_str());
+        let ToBrowser::Frame(f) = wait(&b, |m| matches!(m, ToBrowser::Frame(_))) else {
+            panic!()
+        };
         // 100x50 CSS px at 2x.
         assert_eq!((f.width, f.height), (200, 100));
         assert_eq!(f.scroll, (0.0, 0.0));
         assert!(f.content_size.1 >= 360.0, "{:?}", f.content_size);
         // Scrolling clamps to the content.
-        b.send(ToContent::ScrollBy { dx: 0.0, dy: 10_000.0 });
-        let ToBrowser::Frame(f) = wait(&b, |m| matches!(m, ToBrowser::Frame(_))) else { panic!() };
+        b.send(ToContent::ScrollBy {
+            dx: 0.0,
+            dy: 10_000.0,
+        });
+        let ToBrowser::Frame(f) = wait(&b, |m| matches!(m, ToBrowser::Frame(_))) else {
+            panic!()
+        };
         assert_eq!(f.scroll.1, f.content_size.1 - 50.0);
         b.send(ToContent::ScrollTo { x: 0.0, y: 0.0 });
         wait(&b, |m| matches!(m, ToBrowser::Frame(_)));
         // Hovering the link reports it and the pointer cursor.
         b.send(ToContent::Input(InputEvent::PointerMove { x: 5.0, y: 5.0 }));
-        let ToBrowser::HoverLink(Some(l)) = wait(&b, |m| matches!(m, ToBrowser::HoverLink(_))) else { panic!() };
+        let ToBrowser::HoverLink(Some(l)) = wait(&b, |m| matches!(m, ToBrowser::HoverLink(_)))
+        else {
+            panic!()
+        };
         assert_eq!(l.as_str(), "https://a.test/next");
-        assert_eq!(wait(&b, |m| matches!(m, ToBrowser::Cursor(_))), ToBrowser::Cursor(CursorKind::Pointer));
+        assert_eq!(
+            wait(&b, |m| matches!(m, ToBrowser::Cursor(_))),
+            ToBrowser::Cursor(CursorKind::Pointer)
+        );
         // Clicking it asks the browser to navigate.
         let m = Modifiers::default();
-        b.send(ToContent::Input(InputEvent::PointerDown { x: 5.0, y: 5.0, button: PointerButton::Primary, clicks: 1, modifiers: m }));
-        b.send(ToContent::Input(InputEvent::PointerUp { x: 5.0, y: 5.0, button: PointerButton::Primary, modifiers: m }));
-        let ToBrowser::Navigate(req) = wait(&b, |m| matches!(m, ToBrowser::Navigate(_))) else { panic!() };
+        b.send(ToContent::Input(InputEvent::PointerDown {
+            x: 5.0,
+            y: 5.0,
+            button: PointerButton::Primary,
+            clicks: 1,
+            modifiers: m,
+        }));
+        b.send(ToContent::Input(InputEvent::PointerUp {
+            x: 5.0,
+            y: 5.0,
+            button: PointerButton::Primary,
+            modifiers: m,
+        }));
+        let ToBrowser::Navigate(req) = wait(&b, |m| matches!(m, ToBrowser::Navigate(_))) else {
+            panic!()
+        };
         assert_eq!(req.url.as_str(), "https://a.test/next");
-        assert_eq!(req.initiator, Some(url.clone()));
+        assert_eq!(req.initiator.as_deref(), Some(url.as_str()));
         // Check the checkbox, then submit.
         b.send(ToContent::ScrollTo { x: 0.0, y: 320.0 });
         for (y, _) in [(14.0, "c"), (34.0, "go")] {
-            b.send(ToContent::Input(InputEvent::PointerDown { x: 10.0, y, button: PointerButton::Primary, clicks: 1, modifiers: m }));
-            b.send(ToContent::Input(InputEvent::PointerUp { x: 10.0, y, button: PointerButton::Primary, modifiers: m }));
+            b.send(ToContent::Input(InputEvent::PointerDown {
+                x: 10.0,
+                y,
+                button: PointerButton::Primary,
+                clicks: 1,
+                modifiers: m,
+            }));
+            b.send(ToContent::Input(InputEvent::PointerUp {
+                x: 10.0,
+                y,
+                button: PointerButton::Primary,
+                modifiers: m,
+            }));
         }
-        let ToBrowser::Navigate(req) = wait(&b, |m| matches!(m, ToBrowser::Navigate(_))) else { panic!() };
+        let ToBrowser::Navigate(req) = wait(&b, |m| matches!(m, ToBrowser::Navigate(_))) else {
+            panic!()
+        };
         assert_eq!(req.url.as_str(), "https://a.test/s?c=on");
         // A fragment navigation only scrolls.
-        b.send(ToContent::Navigate(NavigationRequest::user(Url::parse("https://a.test/#d").unwrap())));
-        let ToBrowser::LoadCommitted { url: u, .. } = wait(&b, |m| matches!(m, ToBrowser::LoadCommitted { .. })) else { panic!() };
+        b.send(ToContent::Navigate(NavigationRequest::user(
+            Url::parse("https://a.test/#d").unwrap(),
+        )));
+        let ToBrowser::LoadCommitted { url: u, .. } =
+            wait(&b, |m| matches!(m, ToBrowser::LoadCommitted { .. }))
+        else {
+            panic!()
+        };
         assert_eq!(u.as_str(), "https://a.test/#d");
-        let ToBrowser::Frame(f) = wait(&b, |m| matches!(m, ToBrowser::Frame(_))) else { panic!() };
+        let ToBrowser::Frame(f) = wait(&b, |m| matches!(m, ToBrowser::Frame(_))) else {
+            panic!()
+        };
         assert_eq!(f.scroll.1, 20.0);
         b.send(ToContent::Shutdown);
         t.join().unwrap();
@@ -757,13 +877,27 @@ mod tests {
         let (b, t) = setup(&[]);
         let url = Url::parse("https://a.test/x.zip").unwrap();
         b.send(ToContent::Navigate(NavigationRequest::user(url)));
-        let m = wait(&b, |m| matches!(m, ToBrowser::LoadFailed { .. } | ToBrowser::LoadCommitted { .. }));
+        let m = wait(&b, |m| {
+            matches!(
+                m,
+                ToBrowser::LoadFailed { .. } | ToBrowser::LoadCommitted { .. }
+            )
+        });
         // LocalFetcher answers 404 text/plain for unknown URLs: a page.
         assert!(matches!(m, ToBrowser::LoadCommitted { .. }), "{m:?}");
         let url = Url::parse("gopher://a.test/").unwrap();
         b.send(ToContent::Navigate(NavigationRequest::user(url)));
         let m = wait(&b, |m| matches!(m, ToBrowser::LoadFailed { .. }));
-        assert!(matches!(m, ToBrowser::LoadFailed { failure: LoadFailure::Network(_), .. }), "{m:?}");
+        assert!(
+            matches!(
+                m,
+                ToBrowser::LoadFailed {
+                    failure: LoadFailure::Network(_),
+                    ..
+                }
+            ),
+            "{m:?}"
+        );
         drop(b);
         t.join().unwrap();
     }

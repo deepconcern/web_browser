@@ -2,7 +2,8 @@
 //! M1 needs: a list of entries and a current index, where a new
 //! navigation drops the forward entries.
 
-use wb_ipc::{NavigationMethod, Url};
+use wb_ipc::NavigationMethod;
+use wb_url::Url;
 
 /// The most entries a tab keeps; older ones are dropped.
 pub const MAX_ENTRIES: usize = 50;
@@ -207,7 +208,10 @@ mod tests {
             push(&mut h, &format!("p{i}"));
         }
         assert_eq!(h.len(), MAX_ENTRIES);
-        assert_eq!(h.current().unwrap().url, u(&format!("p{}", MAX_ENTRIES + 9)));
+        assert_eq!(
+            h.current().unwrap().url,
+            u(&format!("p{}", MAX_ENTRIES + 9))
+        );
         assert_eq!(h.entries().0.first().unwrap().url, u("p10"));
     }
 }

@@ -5,7 +5,7 @@
 //! #3). None is preselected: until the user picks one, typing a search
 //! asks them to choose.
 
-use wb_ipc::Url;
+use wb_url::Url;
 
 /// A search engine the user can choose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,10 +101,11 @@ pub fn classify(input: &str, engine: Option<SearchEngine>) -> Input {
     {
         return Input::Url(u);
     }
-    if !text.contains(char::is_whitespace) && looks_like_host(text) {
-        if let Ok(u) = Url::parse(&format!("https://{text}")) {
-            return Input::Url(u);
-        }
+    if !text.contains(char::is_whitespace)
+        && looks_like_host(text)
+        && let Ok(u) = Url::parse(&format!("https://{text}"))
+    {
+        return Input::Url(u);
     }
     search(text)
 }

@@ -7,6 +7,7 @@
 //!   (session history, URL bar input, form controls and submission).
 #![warn(missing_docs)]
 
+pub mod app;
 pub mod browser;
 pub mod content;
 pub mod engine;

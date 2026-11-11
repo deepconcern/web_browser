@@ -8,12 +8,13 @@ use std::thread::JoinHandle;
 use std::time::SystemTime;
 
 use wb_ipc::{
-    BrowserEnd, CursorKind, Frame, LoadFailure, LoadProgress, NavigationMethod,
-    NavigationRequest, TabId, ToBrowser, ToContent, Url, Viewport, Waker,
+    BrowserEnd, CursorKind, Frame, LoadFailure, LoadProgress, NavigationMethod, NavigationRequest,
+    TabId, ToBrowser, ToContent, Viewport, Waker,
 };
 use wb_net::{BackgroundKind, Client, ClientConfig, NetStats, NetworkPolicy};
 use wb_storage::{HistoryEntry, Profile, SiteList};
 use wb_text::FontContext;
+use wb_url::Url;
 
 use crate::content;
 use crate::engine::{Engine, Fetcher};
@@ -204,7 +205,9 @@ impl BrowserCore {
         let https_exceptions = settings
             .site_list(SiteList::HttpsOnlyExceptions)
             .unwrap_or_default();
-        let blocker_disabled = settings.site_list(SiteList::BlockerDisabled).unwrap_or_default();
+        let blocker_disabled = settings
+            .site_list(SiteList::BlockerDisabled)
+            .unwrap_or_default();
         let blocker_on = settings.blocker_enabled().unwrap_or(true);
         let shared = SharedProfile::new(profile);
         let client = Client::with_config(ClientConfig {
@@ -221,7 +224,7 @@ impl BrowserCore {
                 client.allow_insecure_http(&site);
             }
         }
-        let fetcher: Arc<dyn Fetcher> = Arc::new(client.clone());
+        let fetcher: Arc<dyn Fetcher> = Arc::new(BrowserFetcher::new(client.clone()));
         let engine = Engine::new(fetcher, fonts);
         let mut core = BrowserCore {
             profile: shared,
@@ -313,7 +316,9 @@ impl BrowserCore {
         {
             return;
         }
-        let Some(dir) = self.profile_dir() else { return };
+        let Some(dir) = self.profile_dir() else {
+            return;
+        };
         let now = SystemTime::now();
         let due: Vec<_> = {
             let p = self.profile.lock();
@@ -325,7 +330,9 @@ impl BrowserCore {
                         .filter_list(l.id)
                         .ok()
                         .flatten()
-                        .is_some_and(|s| s.enabled && (force || filters::is_due(s.last_updated, now)))
+                        .is_some_and(|s| {
+                            s.enabled && (force || filters::is_due(s.last_updated, now))
+                        })
                 })
                 .collect()
         };
@@ -344,7 +351,9 @@ impl BrowserCore {
                         && filters::save(&dir, list.id, &text).is_ok()
                     {
                         let p = profile.lock();
-                        let _ = p.settings().set_filter_list_updated(list.id, SystemTime::now());
+                        let _ = p
+                            .settings()
+                            .set_filter_list_updated(list.id, SystemTime::now());
                     }
                 }
                 let (enabled, disabled) = {
@@ -360,7 +369,10 @@ impl BrowserCore {
                         .filter(|l| l.enabled)
                         .map(|l| l.id)
                         .collect();
-                    (enabled, s.site_list(SiteList::BlockerDisabled).unwrap_or_default())
+                    (
+                        enabled,
+                        s.site_list(SiteList::BlockerDisabled).unwrap_or_default(),
+                    )
                 };
                 let ids: Vec<&str> = enabled.iter().map(String::as_str).collect();
                 if let Some(b) = filters::compile(&dir, &ids) {
@@ -382,8 +394,10 @@ impl BrowserCore {
             let _ = profile::complete_first_run(&p, choice);
         }
         self.first_run = false;
-        self.client
-            .set_background_allowed(BackgroundKind::FilterListDownload, choice.download_filter_lists);
+        self.client.set_background_allowed(
+            BackgroundKind::FilterListDownload,
+            choice.download_filter_lists,
+        );
         if choice.download_filter_lists {
             self.update_filter_lists(true);
         }
@@ -424,7 +438,11 @@ impl BrowserCore {
     /// Whether the content blocker is on globally.
     #[must_use]
     pub fn blocker_enabled(&self) -> bool {
-        self.profile.lock().settings().blocker_enabled().unwrap_or(true)
+        self.profile
+            .lock()
+            .settings()
+            .blocker_enabled()
+            .unwrap_or(true)
     }
 
     /// Turns the content blocker on or off globally.
@@ -552,7 +570,10 @@ impl BrowserCore {
             .settings()
             .default_zoom()
             .map_or(1.0, |z| z as f32);
-        let viewport = Viewport { zoom, ..self.viewport };
+        let viewport = Viewport {
+            zoom,
+            ..self.viewport
+        };
         let thread = content::spawn(self.engine.clone(), content_end, viewport).ok();
         self.tabs.push(Tab {
             id,
@@ -630,7 +651,9 @@ impl BrowserCore {
             self.active = active;
             return;
         }
-        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
         tab.url_text = request.url.as_str().to_string();
         tab.error = None;
         tab.select_popup = None;
@@ -653,7 +676,9 @@ impl BrowserCore {
     }
 
     fn traverse(&mut self, back: bool) {
-        let Some(tab) = self.tabs.get_mut(self.active) else { return };
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
         if let Some(f) = &tab.frame {
             tab.history.set_scroll(f.scroll);
         }
@@ -673,7 +698,9 @@ impl BrowserCore {
     /// Reloads the active tab's page.
     pub fn reload(&mut self) {
         let Some(tab) = self.active_tab() else { return };
-        let Some(url) = tab.url().cloned() else { return };
+        let Some(url) = tab.url().cloned() else {
+            return;
+        };
         let mut req = NavigationRequest::user(url);
         req.reload = true;
         req.restore_scroll = tab.frame.as_ref().map(|f| f.scroll);
@@ -691,7 +718,9 @@ impl BrowserCore {
     /// loads the page over plain HTTP.
     pub fn allow_insecure_and_continue(&mut self) {
         let Some(tab) = self.active_tab() else { return };
-        let Some(TabError::Https(i)) = tab.error.clone() else { return };
+        let Some(TabError::Https(i)) = tab.error.clone() else {
+            return;
+        };
         {
             let p = self.profile.lock();
             let _ = p
@@ -707,11 +736,10 @@ impl BrowserCore {
     /// Sets the active tab's zoom (clamped to the zoom range).
     pub fn set_zoom(&mut self, zoom: f32) {
         let viewport = self.viewport;
-        let Some(tab) = self.active_tab_mut() else { return };
-        tab.zoom = zoom.clamp(
-            wb_storage::MIN_ZOOM as f32,
-            wb_storage::MAX_ZOOM as f32,
-        );
+        let Some(tab) = self.active_tab_mut() else {
+            return;
+        };
+        tab.zoom = zoom.clamp(wb_storage::MIN_ZOOM as f32, wb_storage::MAX_ZOOM as f32);
         tab.send(ToContent::Viewport(Viewport {
             zoom: tab.zoom,
             ..viewport
@@ -721,7 +749,9 @@ impl BrowserCore {
     /// Steps the active tab's zoom in (`true`) or out along
     /// [`ZOOM_STEPS`].
     pub fn zoom_step(&mut self, zoom_in: bool) {
-        let Some(cur) = self.active_tab().map(|t| t.zoom) else { return };
+        let Some(cur) = self.active_tab().map(|t| t.zoom) else {
+            return;
+        };
         let next = if zoom_in {
             ZOOM_STEPS.iter().copied().find(|&z| z > cur + 0.001)
         } else {
@@ -759,7 +789,11 @@ impl BrowserCore {
 
 /// Applies one content message to `tab`; returns a navigation the page
 /// asked for.
-fn handle_message(profile: &SharedProfile, tab: &mut Tab, msg: ToBrowser) -> Option<NavigationRequest> {
+fn handle_message(
+    profile: &SharedProfile,
+    tab: &mut Tab,
+    msg: ToBrowser,
+) -> Option<NavigationRequest> {
     match msg {
         ToBrowser::LoadStarted { .. } => {
             tab.loading = Some(LoadProgress::Document);
@@ -770,13 +804,16 @@ fn handle_message(profile: &SharedProfile, tab: &mut Tab, msg: ToBrowser) -> Opt
             title,
             blocked_requests,
         } => {
+            let url = Url::parse(&url).ok()?;
             tab.loading = None;
             tab.error = None;
             tab.blocked_requests = blocked_requests;
             let (method, kind) = tab
                 .pending
                 .take()
-                .map_or((NavigationMethod::Get, Pending::Push), |(r, k)| (r.method, k));
+                .map_or((NavigationMethod::Get, Pending::Push), |(r, k)| {
+                    (r.method, k)
+                });
             match kind {
                 Pending::Push => tab.history.push(url.clone(), title.clone(), &method),
                 Pending::Replace if tab.history.is_empty() => {
@@ -802,6 +839,7 @@ fn handle_message(profile: &SharedProfile, tab: &mut Tab, msg: ToBrowser) -> Opt
         ToBrowser::LoadFailed { url, failure } => {
             tab.loading = None;
             tab.pending = None;
+            let url = Url::parse(&url).ok()?;
             tab.error = Some(match failure {
                 LoadFailure::HttpsUpgradeFailed { host, reason, .. } => {
                     TabError::Https(Interstitial { url, host, reason })
@@ -818,7 +856,7 @@ fn handle_message(profile: &SharedProfile, tab: &mut Tab, msg: ToBrowser) -> Opt
             });
         }
         ToBrowser::Frame(f) => tab.frame = Some(f),
-        ToBrowser::HoverLink(l) => tab.hover_link = l,
+        ToBrowser::HoverLink(l) => tab.hover_link = l.and_then(|l| Url::parse(&l).ok()),
         ToBrowser::Cursor(c) => tab.cursor = c,
         ToBrowser::Navigate(req) => return Some(req),
         ToBrowser::Copied(t) => tab.copied = Some(t),
@@ -837,9 +875,73 @@ fn handle_message(profile: &SharedProfile, tab: &mut Tab, msg: ToBrowser) -> Opt
     None
 }
 
+/// The browser's fetcher: the network client, plus local files for
+/// `file:` URLs the user opened. A `file:` request is allowed only as a
+/// user-initiated navigation or as a subresource of a `file:` page, so a
+/// web page can't read local files.
+struct BrowserFetcher {
+    client: Client,
+    files: crate::engine::LocalFetcher,
+}
+
+impl BrowserFetcher {
+    fn new(client: Client) -> BrowserFetcher {
+        BrowserFetcher {
+            client,
+            files: crate::engine::LocalFetcher::new().with_file_root("/"),
+        }
+    }
+
+    fn file_allowed(req: &wb_net::Request) -> bool {
+        match &req.context {
+            wb_net::RequestContext::Navigation { initiator } => {
+                initiator.is_none() || req.referrer.as_ref().is_some_and(|r| r.scheme() == "file")
+            }
+            wb_net::RequestContext::Subresource { .. } => {
+                req.referrer.as_ref().is_some_and(|r| r.scheme() == "file")
+            }
+            wb_net::RequestContext::Background(_) => false,
+        }
+    }
+}
+
+impl Fetcher for BrowserFetcher {
+    fn fetch(&self, request: wb_net::Request) -> Result<wb_net::Response, wb_net::NetError> {
+        if request.url.scheme() == "file" {
+            if Self::file_allowed(&request) {
+                return self.files.fetch(request);
+            }
+            return Err(wb_net::NetError::UnsupportedScheme("file".into()));
+        }
+        self.client.fetch(request)
+    }
+
+    fn fetch_all(
+        &self,
+        requests: Vec<wb_net::Request>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Vec<Result<wb_net::Response, wb_net::NetError>> {
+        if requests.iter().any(|r| r.url.scheme() == "file") {
+            return requests
+                .into_iter()
+                .map(|r| {
+                    if cancelled() {
+                        Err(wb_net::NetError::Cancelled)
+                    } else {
+                        self.fetch(r)
+                    }
+                })
+                .collect();
+        }
+        self.client.fetch_all(requests, cancelled)
+    }
+}
+
 /// The site whose `http:` exception covers `host`.
 fn site_for_host(host: &str) -> Option<wb_url::Site> {
-    Url::parse(&format!("http://{host}/")).ok().map(|u| u.site())
+    Url::parse(&format!("http://{host}/"))
+        .ok()
+        .map(|u| u.site())
 }
 
 #[cfg(test)]
@@ -874,7 +976,8 @@ mod tests {
             assert!(
                 start.elapsed() < Duration::from_secs(10),
                 "timed out: {:?}",
-                c.active_tab().map(|t| (&t.title, &t.loading, &t.error, t.history.len()))
+                c.active_tab()
+                    .map(|t| (&t.title, &t.loading, &t.error, t.history.len()))
             );
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -890,8 +993,13 @@ mod tests {
         assert!(c.first_run);
         assert!(!c.filter_downloads_enabled());
         c.open_tab(None);
-        c.open_tab(Some(NavigationRequest::user(Url::parse("about:blank").unwrap())));
-        poll_until(&mut c, |c| c.active_tab().is_some_and(|t| t.loading.is_none() && t.url().is_some()));
+        c.open_tab(Some(NavigationRequest::user(
+            Url::parse("about:blank").unwrap(),
+        )));
+        poll_until(&mut c, |c| {
+            c.active_tab()
+                .is_some_and(|t| t.loading.is_none() && t.url().is_some())
+        });
         c.update_filter_lists(true);
         c.complete_first_run(&FirstRunChoice {
             search_engine: SearchEngine::by_id("duckduckgo"),
@@ -939,12 +1047,17 @@ mod tests {
         assert!(t.history.can_go_back());
         assert_eq!(t.history.len(), 2);
         c.back();
-        poll_until(&mut c, |c| c.active_tab().is_some_and(|t| t.title == "A" && t.loading.is_none()));
+        poll_until(&mut c, |c| {
+            c.active_tab()
+                .is_some_and(|t| t.title == "A" && t.loading.is_none())
+        });
         let t = c.active_tab().unwrap();
         assert_eq!(t.history.len(), 2);
         assert!(t.history.can_go_forward());
         c.reload();
-        poll_until(&mut c, |c| c.active_tab().is_some_and(|t| t.loading.is_none()));
+        poll_until(&mut c, |c| {
+            c.active_tab().is_some_and(|t| t.loading.is_none())
+        });
         assert_eq!(c.active_tab().unwrap().history.len(), 2);
         // Zoom steps and clamps.
         c.zoom_step(true);
@@ -955,7 +1068,9 @@ mod tests {
         assert_eq!(c.active_tab().unwrap().zoom, wb_storage::MAX_ZOOM as f32);
         // Failures show an error page.
         c.submit_input("data:application/zip,PK");
-        poll_until(&mut c, |c| c.active_tab().is_some_and(|t| t.error.is_some()));
+        poll_until(&mut c, |c| {
+            c.active_tab().is_some_and(|t| t.error.is_some())
+        });
         // Tabs.
         c.open_tab(None);
         assert_eq!(c.tabs.len(), 2);
@@ -963,6 +1078,36 @@ mod tests {
         assert!(c.close_tab(1));
         assert_eq!(c.active, 0);
         assert!(!c.close_tab(0));
+    }
+
+    #[test]
+    fn file_urls_only_for_the_user_and_file_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap().join("a.html");
+        std::fs::write(&path, "<p>local").unwrap();
+        let url = Url::parse(&format!("file://{}", path.display())).unwrap();
+        let client = Client::with_config(ClientConfig {
+            policy: NetworkPolicy::none(),
+            ..ClientConfig::default()
+        })
+        .unwrap();
+        let f = BrowserFetcher::new(client);
+        let user = wb_net::Request::navigate(url.clone());
+        assert_eq!(f.fetch(user).unwrap().body, b"<p>local");
+        let web = Url::parse("https://evil.test/").unwrap();
+        let sub = wb_net::Request::subresource(url.clone(), &web);
+        assert!(f.fetch(sub).is_err());
+        let mut nav = wb_net::Request::navigate(url.clone());
+        nav.context = wb_net::RequestContext::Navigation {
+            initiator: Some(web.site()),
+        };
+        assert!(f.fetch(nav.clone()).is_err());
+        nav.referrer = Some(web.clone());
+        assert!(f.fetch(nav.clone()).is_err());
+        nav.referrer = Some(url.clone());
+        assert!(f.fetch(nav).is_ok());
+        let ok = wb_net::Request::subresource(url.clone(), &url);
+        assert!(f.fetch(ok).is_ok());
     }
 
     #[test]

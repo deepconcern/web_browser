@@ -13,6 +13,3 @@ level = 0
 
 [lints]
 workspace = true
-
-[dependencies]
-wb-url = { path = "../url" }

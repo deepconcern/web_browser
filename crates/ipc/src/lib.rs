@@ -16,12 +16,15 @@
 #![deny(missing_docs)]
 
 use std::fmt;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::Arc;
 use std::time::Duration;
 
-pub use wb_url::Url;
+/// A URL as it crosses the process boundary: its serialization (URL
+/// Standard §4.5 "URL serializer"). The receiver re-parses it, so a
+/// compromised sender can't hand over a malformed URL object.
+pub type SerializedUrl = String;
 
 /// Identifies a tab for the lifetime of the browser.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -151,12 +154,12 @@ pub enum NavigationMethod {
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavigationRequest {
     /// Where to go.
-    pub url: Url,
+    pub url: SerializedUrl,
     /// GET or POST.
     pub method: NavigationMethod,
     /// The URL of the page that started the navigation (a link or form),
     /// or `None` when the user did (address bar, history, bookmarks).
-    pub initiator: Option<Url>,
+    pub initiator: Option<SerializedUrl>,
     /// Bypass the cache (reload).
     pub reload: bool,
     /// The scroll position to restore once loaded (back/forward).
@@ -166,11 +169,12 @@ pub struct NavigationRequest {
 }
 
 impl NavigationRequest {
-    /// A user-initiated GET of `url`.
+    /// A user-initiated GET of `url`, given as anything whose `Display`
+    /// is its serialization (a parsed URL or a string).
     #[must_use]
-    pub fn user(url: Url) -> NavigationRequest {
+    pub fn user(url: impl fmt::Display) -> NavigationRequest {
         NavigationRequest {
-            url,
+            url: url.to_string(),
             method: NavigationMethod::Get,
             initiator: None,
             reload: false,
@@ -210,6 +214,9 @@ impl Viewport {
 
 /// Messages from the browser to a tab's content side.
 #[derive(Clone, Debug, PartialEq)]
+// Messages are moved once through a channel; boxing the large variant
+// would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum ToContent {
     /// Load a page.
     Navigate(NavigationRequest),
@@ -329,14 +336,14 @@ pub enum ToBrowser {
     /// A navigation started.
     LoadStarted {
         /// The requested URL.
-        url: Url,
+        url: SerializedUrl,
     },
     /// A load moved on to a new stage.
     LoadProgress(LoadProgress),
     /// The new page replaced the old one.
     LoadCommitted {
         /// The final URL (after redirects).
-        url: Url,
+        url: SerializedUrl,
         /// The page title (may be empty).
         title: String,
         /// How many requests the content blocker stopped.
@@ -347,14 +354,14 @@ pub enum ToBrowser {
     /// The load failed; the old page (if any) stays.
     LoadFailed {
         /// The URL that failed.
-        url: Url,
+        url: SerializedUrl,
         /// Why.
         failure: LoadFailure,
     },
     /// A new frame is ready.
     Frame(Frame),
     /// The link under the pointer changed.
-    HoverLink(Option<Url>),
+    HoverLink(Option<SerializedUrl>),
     /// The cursor the page wants.
     Cursor(CursorKind),
     /// The page asks to navigate (link click, form submission).
@@ -453,6 +460,7 @@ impl fmt::Debug for ContentEnd {
 
 /// What [`ContentEnd::recv`] got.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Received {
     /// A message.
     Message(ToContent),
@@ -540,7 +548,7 @@ mod tests {
         let (browser, content) = channel(Arc::new(move || {
             w.fetch_add(1, Ordering::SeqCst);
         }));
-        let url = Url::parse("https://a.test/").unwrap();
+        let url = String::from("https://a.test/");
         assert!(browser.send(ToContent::Navigate(NavigationRequest::user(url.clone()))));
         let t = std::thread::spawn(move || {
             let Some(ToContent::Navigate(req)) = content.recv() else {
