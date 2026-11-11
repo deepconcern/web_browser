@@ -45,9 +45,13 @@
 //!   document in M1.
 //! - Flex layout (CSS Flexbox 1 §9).
 //!
-//! Tables are laid out as block containers until their module lands (see
-//! the `M1 follow-up` notes in `formatting/`). Grid and multi-column fall
-//! back to block layout by design in M1.
+//! - Tables (CSS 2.2 §17, CSS Tables 3 column widths): anonymous table
+//!   objects, captions, `colspan`/`rowspan`, automatic and fixed table
+//!   layout, both border models (collapsed borders are resolved onto the
+//!   cell fragments' styles, see `formatting/table`), `empty-cells`, cell
+//!   `vertical-align`.
+//!
+//! Grid and multi-column fall back to block layout by design in M1.
 #![warn(missing_docs)]
 
 mod box_tree;

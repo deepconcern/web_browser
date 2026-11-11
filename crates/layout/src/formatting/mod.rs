@@ -9,8 +9,8 @@
 //! Formatting modules:
 //!
 //! - `block` and `inline`: block and inline formatting contexts.
-//! - `table`: [`Formatting::Table`] / [`Formatting::TableInternal`]
-//!   (currently block layout).
+//! - `table`: [`Formatting::Table`] (CSS 2.2 §17); stray
+//!   [`Formatting::TableInternal`] boxes fall back to block layout.
 //! - `flex`: [`Formatting::Flex`], flex layout.
 //! - `float`: floats and `clear` in block formatting contexts; line boxes
 //!   ask it for the room beside floats.
