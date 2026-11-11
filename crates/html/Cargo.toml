@@ -11,5 +11,9 @@ publish = false
 [package.metadata.layer]
 level = 2
 
+[dependencies]
+wb-dom = { path = "../dom" }
+encoding_rs = { workspace = true }
+
 [lints]
 workspace = true
