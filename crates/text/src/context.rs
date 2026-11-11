@@ -393,9 +393,7 @@ impl FontContext {
         let default = FontFamily::Generic(self.default_family);
         for family in query.families.iter().chain(std::iter::once(&default)) {
             let index = match family {
-                FontFamily::Named(name) => {
-                    self.family_index.get(&name.to_ascii_lowercase()).copied()
-                }
+                FontFamily::Named(name) => self.family_index.get(&fold_family_name(name)).copied(),
                 FontFamily::Generic(g) => self.generics.get(generic_slot(*g)).copied().flatten(),
             };
             if let Some(face) = index.and_then(|i| self.best_in_family(i, want))
@@ -441,7 +439,7 @@ impl FontContext {
     }
 
     fn family_by_name(&self, name: &str) -> Option<usize> {
-        self.family_index.get(&name.to_ascii_lowercase()).copied()
+        self.family_index.get(&fold_family_name(name)).copied()
     }
 
     /// Chooses the face for one character (CSS Fonts 4 §5.2 steps 5–7):
@@ -462,7 +460,12 @@ impl FontContext {
             .or_else(|| self.any_face())
     }
 
-    fn system_fallback(&self, c: char, want: FaceAttrs, script: Script) -> Option<FontId> {
+    pub(crate) fn system_fallback(
+        &self,
+        c: char,
+        want: FaceAttrs,
+        script: Script,
+    ) -> Option<FontId> {
         let key = (c, want.weight.get(), want.style, want.stretch.tenths());
         if let Some(hit) = lock(&self.fallback).get(&key) {
             return *hit;
@@ -586,7 +589,7 @@ impl FontContext {
                     names_lower: info
                         .families
                         .iter()
-                        .map(|(n, _)| n.to_ascii_lowercase())
+                        .map(|(n, _)| fold_family_name(n))
                         .collect(),
                     family,
                     postscript_name: info.post_script_name.clone(),
@@ -628,7 +631,7 @@ impl FontContext {
             };
             let Ok(raw) = u32::try_from(i) else { continue };
             let id = FontId(raw);
-            let key = face.family.to_ascii_lowercase();
+            let key = fold_family_name(&face.family);
             let fam = match primary.get(&key) {
                 Some(f) => *f,
                 None => {
@@ -709,6 +712,24 @@ impl FontContext {
     }
 }
 
+/// Case-folds a family name for matching. CSS Fonts 4 §5.1: "User agents
+/// must match these names case insensitively, using the 'Default Caseless
+/// Matching' algorithm outlined in the Unicode specification", without
+/// normalization or language tailoring, using full (C + F) case folding.
+///
+/// The standard library has no case-folding table, so this composes its
+/// full case mappings (lower, then upper, then lower). For family names
+/// that gives the same equivalence classes as full case folding, including
+/// the expanding folds (`ß` and `ẞ` match `ss`, `ﬁ` matches `fi`) and
+/// final sigma.
+pub(crate) fn fold_family_name(name: &str) -> String {
+    name.chars()
+        .flat_map(char::to_lowercase)
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 pub(crate) fn attrs_of(query: &FontQuery) -> FaceAttrs {
     FaceAttrs {
         weight: query.weight,
@@ -760,6 +781,26 @@ fn sort_key(f: &Face) -> SortKey<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn family_names_use_unicode_caseless_matching() {
+        let f = fold_family_name;
+        assert_eq!(f("DejaVu Sans"), f("dejavu SANS"));
+        // Non-ASCII letters fold too (ASCII-only lowercasing would fail).
+        assert_eq!(f("ÉCOLE"), f("école"));
+        assert_eq!(f("ΣΟΦΊΑ"), f("σοφία"));
+        // Final sigma and expanding folds.
+        assert_eq!(f("οδος"), f("οδοσ"));
+        assert_eq!(f("ΟΔΟΣ"), f("οδος"));
+        assert_eq!(f("Straße"), f("STRASSE"));
+        assert_eq!(f("STRAẞE"), f("strasse"));
+        assert_eq!(f("ﬁne"), f("FINE"));
+        // Kelvin sign folds to k.
+        assert_eq!(f("\u{212a}"), f("k"));
+        // No normalization: a + combining ring is not å.
+        assert_ne!(f("a\u{30a}"), f("\u{e5}"));
+        assert_ne!(f("Arial"), f("Arimo"));
+    }
 
     #[test]
     fn coverage_lookup() {

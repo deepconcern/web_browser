@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use unicode_script::{Script, UnicodeScript};
 
-use crate::bidi::{Direction, resolve_levels};
+use crate::bidi::{Direction, TextAnalysis};
 use crate::context::{FontContext, FontId, attrs_of, lock};
 use crate::matching::FaceAttrs;
 use crate::style::{FontQuery, FontStyle};
@@ -207,6 +207,13 @@ fn joins_previous(c: char) -> bool {
             | 0xE0000..=0xE0FFF) // tags, variation selectors supplement
 }
 
+/// Characters that belong to the cluster of the character before them:
+/// combining marks (Script=Inherited) and the joiners and selectors of
+/// [`joins_previous`], but not line or tab controls.
+fn extends_cluster(c: char) -> bool {
+    !c.is_control() && (joins_previous(c) || c.script() == Script::Inherited)
+}
+
 fn is_real_script(s: Script) -> bool {
     !matches!(s, Script::Common | Script::Inherited | Script::Unknown)
 }
@@ -306,7 +313,30 @@ impl FontContext {
     /// A range that is out of bounds or not on `char` boundaries is
     /// clamped and shrunk to the nearest boundaries inside it.
     pub fn shape_range(&self, text: &str, range: Range<usize>, style: &TextStyle) -> ShapedText {
-        let bidi = resolve_levels(text, style.direction);
+        let analysis = TextAnalysis::new(text, style.direction);
+        self.shape_analyzed(text, &analysis, range, style)
+    }
+
+    /// Like [`FontContext::shape_range`], but reuses a [`TextAnalysis`] of
+    /// the whole `text` instead of recomputing it, so shaping a paragraph
+    /// line by line stays linear. The analysis decides the direction
+    /// (`style.direction` is not consulted). An analysis of a different
+    /// length than `text` is ignored and recomputed.
+    pub fn shape_analyzed(
+        &self,
+        text: &str,
+        analysis: &TextAnalysis,
+        range: Range<usize>,
+        style: &TextStyle,
+    ) -> ShapedText {
+        let recomputed;
+        let analysis = if analysis.len() == text.len() {
+            analysis
+        } else {
+            recomputed = TextAnalysis::new(text, style.direction);
+            &recomputed
+        };
+        let bidi = &analysis.bidi;
         let base_direction = bidi.base;
         let range = clamp_range(text, range);
         let Some(slice) = text.get(range.clone()) else {
@@ -327,13 +357,18 @@ impl FontContext {
         let mut prev_font: Option<FontId> = None;
         for (i, (offset, c)) in chars.iter().enumerate() {
             let script = scripts.get(i).copied().unwrap_or(Script::Common);
-            let font = match prev_font {
-                Some(p) if joins_previous(*c) => Some(p),
-                // A combining mark stays with its base when the base's
-                // face can draw it.
-                Some(p) if c.script() == Script::Inherited && self.has_glyph(p, *c) => Some(p),
-                _ if joins_previous(*c) => list.first().copied(),
-                _ => self.font_for_char(&list, *c, want, c.script()),
+            let font = if prev_font.is_some() && extends_cluster(*c) {
+                // Marks and joiners use the face chosen for their cluster.
+                prev_font
+            } else if joins_previous(*c) {
+                prev_font.or_else(|| list.first().copied())
+            } else {
+                let rest = chars.get(i + 1..).unwrap_or(&[]);
+                let marks = rest
+                    .iter()
+                    .map(|(_, m)| *m)
+                    .take_while(|m| extends_cluster(*m));
+                self.font_for_cluster(&list, *c, marks, want)
             };
             let Some(font) = font else { continue };
             prev_font = Some(font);
@@ -377,6 +412,34 @@ impl FontContext {
             runs,
             base_direction,
         }
+    }
+
+    /// Chooses one face for a base character and the combining marks that
+    /// follow it, so a cluster is not split across faces: the first face in
+    /// the family list that covers the whole cluster, else a system
+    /// fallback face that does, else the base character's own face
+    /// (CSS Fonts 4 §5.2 steps 5-7 applied to the cluster).
+    fn font_for_cluster(
+        &self,
+        list: &[FontId],
+        base: char,
+        marks: impl Iterator<Item = char>,
+        want: FaceAttrs,
+    ) -> Option<FontId> {
+        let required: Vec<char> = marks.filter(|m| !joins_previous(*m)).collect();
+        if required.is_empty() {
+            return self.font_for_char(list, base, want, base.script());
+        }
+        let covers =
+            |f: FontId| self.has_glyph(f, base) && required.iter().all(|m| self.has_glyph(f, *m));
+        list.iter()
+            .copied()
+            .find(|f| covers(*f))
+            .or_else(|| {
+                self.system_fallback(base, want, base.script())
+                    .filter(|f| covers(*f))
+            })
+            .or_else(|| self.font_for_char(list, base, want, base.script()))
     }
 
     /// Measures the advance width of `text` (convenience for

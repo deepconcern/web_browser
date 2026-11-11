@@ -34,10 +34,12 @@ mod raster;
 mod shape;
 mod style;
 
-pub use bidi::{Direction, paragraph_direction, reorder_visual};
+pub use bidi::{Direction, TextAnalysis, paragraph_direction, reorder_visual};
 pub use context::{FontContext, FontFaceInfo, FontId, FontLoadError};
 pub use linebreak::{BreakOpportunity, break_opportunities};
 pub use metrics::FontMetrics;
-pub use raster::{GlyphMask, GlyphRequest, SUBPIXEL_BINS, SubpixelBin, subpixel_position};
+pub use raster::{
+    GlyphMask, GlyphRequest, MAX_RASTER_PX_PER_EM, SUBPIXEL_BINS, SubpixelBin, subpixel_position,
+};
 pub use shape::{GlyphId, ShapedGlyph, ShapedRun, ShapedText, Synthesis, TextStyle};
 pub use style::{FontFamily, FontQuery, FontStretch, FontStyle, FontWeight, GenericFamily};

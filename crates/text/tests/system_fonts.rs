@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 
 use wb_text::{
     Direction, FontContext, FontFamily, FontQuery, FontStyle, FontWeight, GenericFamily, GlyphId,
-    GlyphRequest, ShapedText, SubpixelBin, Synthesis, TextStyle, break_opportunities,
+    GlyphRequest, ShapedText, SubpixelBin, Synthesis, TextAnalysis, TextStyle, break_opportunities,
     subpixel_position,
 };
 
@@ -419,4 +419,141 @@ fn break_opportunities_line_up_with_clusters() {
         start = b.offset;
     }
     assert!((total - shaped.width()).abs() < 1e-3);
+}
+
+fn h_request(ctx: &FontContext) -> Option<GlyphRequest> {
+    let shaped = ctx.shape("H", &sans(16.0));
+    let run = shaped.runs.first()?;
+    let g = run.glyphs.first()?;
+    Some(GlyphRequest {
+        font: run.font,
+        glyph: g.id,
+        size: 16.0,
+        scale: 1.0,
+        subpixel: SubpixelBin::new(0),
+        synthesis: Synthesis::default(),
+    })
+}
+
+#[test]
+fn zero_and_tiny_sizes_do_not_rasterize() {
+    let Some(ctx) = ctx() else { return };
+    let Some(req) = h_request(ctx) else { return };
+    for size in [0.0, 0.001, -4.0, f32::NAN] {
+        assert!(
+            ctx.rasterize_glyph(&GlyphRequest { size, ..req }).is_none(),
+            "size {size} rasterized"
+        );
+    }
+    assert!(
+        ctx.rasterize_glyph(&GlyphRequest { scale: 0.0, ..req })
+            .is_none()
+    );
+}
+
+#[test]
+fn huge_sizes_are_refused_before_allocating() {
+    let Some(ctx) = ctx() else { return };
+    let Some(req) = h_request(ctx) else { return };
+    for (size, scale) in [(1e6, 1.0), (40_000.0, 2.0), (f32::MAX, 1.0)] {
+        assert!(
+            ctx.rasterize_glyph(&GlyphRequest { size, scale, ..req })
+                .is_none()
+        );
+    }
+    // The cap itself still renders.
+    let at_cap = ctx.rasterize_glyph(&GlyphRequest {
+        size: wb_text::MAX_RASTER_PX_PER_EM,
+        ..req
+    });
+    assert!(at_cap.is_some_and(|m| !m.is_empty()));
+    // Masks that large are not cached, so the cache stays within budget.
+    assert!(ctx.glyph_cache_bytes() <= 32 * 1024 * 1024);
+}
+
+#[test]
+fn family_names_match_non_ascii_case_insensitively() {
+    let Some(ctx) = ctx() else { return };
+    if !has_family(ctx, "DejaVu Sans") {
+        return;
+    }
+    let q = FontQuery::new(FontFamily::Named("DEJAVU SANS".to_owned()));
+    let a = ctx.match_families(&q).first().copied();
+    // U+017F LATIN SMALL LETTER LONG S case-folds to "s" under Default
+    // Caseless Matching (CSS Fonts 4 §5.1); ASCII lowercasing would not.
+    let q = FontQuery::new(FontFamily::Named("dejavu \u{17f}ans".to_owned()));
+    let b = ctx.match_families(&q).first().copied();
+    assert_eq!(a, b);
+    assert_eq!(
+        b.and_then(|f| ctx.face_info(f)).map(|i| i.family),
+        Some("DejaVu Sans".to_owned())
+    );
+}
+
+#[test]
+fn shape_analyzed_matches_shape_range() {
+    let Some(ctx) = ctx() else { return };
+    let text = "one two שלום three four";
+    let style = sans(16.0);
+    let analysis = TextAnalysis::new(text, None);
+    assert_eq!(analysis.len(), text.len());
+    assert_eq!(analysis.base_direction(), Direction::Ltr);
+    for range in [0..8, 8..17, 17..text.len(), 0..text.len()] {
+        assert_eq!(
+            ctx.shape_analyzed(text, &analysis, range.clone(), &style),
+            ctx.shape_range(text, range, &style)
+        );
+    }
+    // A stale analysis (wrong length) is recomputed, not trusted.
+    let stale = TextAnalysis::new("abc", Some(Direction::Rtl));
+    assert_eq!(
+        ctx.shape_analyzed(text, &stale, 0..3, &style),
+        ctx.shape_range(text, 0..3, &style)
+    );
+}
+
+#[test]
+fn base_and_mark_share_a_face_when_one_covers_both() {
+    let Some(ctx) = ctx() else { return };
+    // U+20D7 COMBINING RIGHT ARROW ABOVE: not in Liberation Sans, but in
+    // DejaVu Sans, which also has "v".
+    let mark = '\u{20d7}';
+    let face = |name: &str| {
+        let q = FontQuery::new(FontFamily::Named(name.to_owned()));
+        ctx.match_families(&q)
+            .first()
+            .copied()
+            .filter(|f| ctx.face_info(*f).is_some_and(|i| i.family == name))
+    };
+    let (Some(lib), Some(dv)) = (face("Liberation Sans"), face("DejaVu Sans")) else {
+        eprintln!("needs Liberation Sans and DejaVu Sans; skipping");
+        return;
+    };
+    if ctx.has_glyph(lib, mark) || !ctx.has_glyph(dv, mark) || !ctx.has_glyph(lib, 'v') {
+        eprintln!("coverage differs from expectations; skipping");
+        return;
+    }
+    let q = FontQuery {
+        families: vec![
+            FontFamily::Named("Liberation Sans".to_owned()),
+            FontFamily::Named("DejaVu Sans".to_owned()),
+        ],
+        ..FontQuery::default()
+    };
+    let text = "x v\u{20d7} y";
+    let shaped = ctx.shape(text, &TextStyle::new(q, 16.0));
+    assert_clusters_valid(text, &shaped);
+    let v = text.find('v').unwrap_or(0);
+    let font_at = |offset: usize| {
+        shaped
+            .runs
+            .iter()
+            .find(|r| r.range.contains(&offset))
+            .map(|r| r.font)
+    };
+    // The whole cluster moves to DejaVu Sans; the rest stays in Liberation.
+    assert_eq!(font_at(v), Some(dv));
+    assert_eq!(font_at(v + 1), Some(dv));
+    assert_eq!(font_at(0), Some(lib));
+    assert_eq!(font_at(text.len() - 1), Some(lib));
 }

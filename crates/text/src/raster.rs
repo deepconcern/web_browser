@@ -26,6 +26,24 @@ const SYNTHETIC_OBLIQUE_DEGREES: f32 = 14.0;
 /// least-recently-used policy is an M1 follow-up.
 const MAX_CACHE_ENTRIES: usize = 16_384;
 
+/// Total mask bytes kept before the cache is emptied.
+const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Masks larger than this are returned but never cached, so one huge glyph
+/// cannot evict everything else.
+const MAX_CACHED_MASK_BYTES: usize = 1024 * 1024;
+
+/// The largest em size, in device pixels, that is rasterized. Larger
+/// requests (page-controlled `font-size` times the scale factor) return
+/// `None` instead of allocating unbounded masks. M1 follow-up: draw such
+/// glyphs as paths in paint.
+pub const MAX_RASTER_PX_PER_EM: f32 = 2048.0;
+
+/// The largest mask side, in device pixels, checked against the scaled
+/// outline's bounds before rendering (guards against fonts whose outlines
+/// reach far outside the em box).
+const MAX_MASK_SIDE: f32 = 4096.0;
+
 /// A horizontal subpixel position, in quarters of a device pixel
 /// (`0..SUBPIXEL_BINS`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -144,6 +162,8 @@ struct CacheKey {
 pub(crate) struct GlyphCache {
     scaler: ScaleContext,
     masks: HashMap<CacheKey, Option<Arc<GlyphMask>>>,
+    /// Sum of `data.len()` over the cached masks.
+    bytes: usize,
 }
 
 impl GlyphCache {
@@ -151,11 +171,32 @@ impl GlyphCache {
         Self {
             scaler: ScaleContext::new(),
             masks: HashMap::new(),
+            bytes: 0,
         }
     }
 
     pub(crate) fn clear(&mut self) {
         self.masks.clear();
+        self.bytes = 0;
+    }
+
+    /// Caches a result within the entry and byte budgets. Oversized masks
+    /// are not cached at all.
+    fn insert(&mut self, key: CacheKey, mask: Option<Arc<GlyphMask>>) {
+        let size = mask.as_ref().map_or(0, |m| m.data.len());
+        if size > MAX_CACHED_MASK_BYTES {
+            return;
+        }
+        if self.masks.len() >= MAX_CACHE_ENTRIES
+            || self.bytes.saturating_add(size) > MAX_CACHE_BYTES
+        {
+            self.clear();
+        }
+        if let Some(old) = self.masks.insert(key, mask) {
+            let old_size = old.as_ref().map_or(0, |m| m.data.len());
+            self.bytes = self.bytes.saturating_sub(old_size);
+        }
+        self.bytes = self.bytes.saturating_add(size);
     }
 }
 
@@ -172,9 +213,18 @@ fn device_size_64ths(size: f32, scale: f32) -> u32 {
     }
 }
 
+/// Whether a device size (in 1/64 px) can be rasterized: zero would make
+/// the scaler use unscaled design units, and huge sizes allocate huge
+/// masks.
+fn raster_size_ok(size_64ths: u32) -> bool {
+    size_64ths > 0 && (size_64ths as f32) / 64.0 <= MAX_RASTER_PX_PER_EM
+}
+
 impl FontContext {
     /// Rasterizes a glyph to a grayscale coverage mask, from the cache when
-    /// possible. Returns `None` for an unknown font, an unreadable file, or
+    /// possible. Returns `None` for an unknown font, an unreadable file, a
+    /// device em size that is zero (after rounding to 1/64 px) or above
+    /// [`MAX_RASTER_PX_PER_EM`], an outline too large to rasterize, or
     /// a glyph with no outline (such as a color-bitmap-only emoji; color
     /// glyphs are an M1 follow-up).
     pub fn rasterize_glyph(&self, request: &GlyphRequest) -> Option<Arc<GlyphMask>> {
@@ -189,19 +239,24 @@ impl FontContext {
         if let Some(hit) = lock(&self.glyphs).masks.get(&key) {
             return hit.clone();
         }
+        if !raster_size_ok(key.size) {
+            return None;
+        }
         let (bytes, index) = self.face_data(request.font)?;
         let mut cache = lock(&self.glyphs);
         let mask = render(&mut cache.scaler, (*bytes).as_ref(), index, key).map(Arc::new);
-        if cache.masks.len() >= MAX_CACHE_ENTRIES {
-            cache.masks.clear();
-        }
-        cache.masks.insert(key, mask.clone());
+        cache.insert(key, mask.clone());
         mask
     }
 
     /// The number of glyph masks currently cached.
     pub fn glyph_cache_len(&self) -> usize {
         lock(&self.glyphs).masks.len()
+    }
+
+    /// The bytes of mask data currently cached.
+    pub fn glyph_cache_bytes(&self) -> usize {
+        lock(&self.glyphs).bytes
     }
 }
 
@@ -226,6 +281,17 @@ fn render(scaler: &mut ScaleContext, data: &[u8], index: u32, key: CacheKey) -> 
             Angle::from_degrees(SYNTHETIC_OBLIQUE_DEGREES),
             Angle::ZERO,
         )));
+    }
+    // Check the scaled outline's extent before rendering allocates.
+    if let Some(outline) = s.scale_outline(key.glyph) {
+        let b = outline.bounds();
+        let pad = if key.bold { px / 16.0 + 2.0 } else { 2.0 };
+        let skew = if key.oblique { b.height() * 0.25 } else { 0.0 };
+        let w = b.width() + skew + pad;
+        let h = b.height() + pad;
+        if !(w.is_finite() && h.is_finite()) || w > MAX_MASK_SIDE || h > MAX_MASK_SIDE {
+            return None;
+        }
     }
     let image = render.render(&mut s, key.glyph)?;
     if image.content != swash::scale::image::Content::Mask {
@@ -265,6 +331,68 @@ mod tests {
     fn bins_wrap() {
         assert_eq!(SubpixelBin::new(5).get(), 1);
         assert!((SubpixelBin::new(2).offset() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn raster_size_limits() {
+        assert!(!raster_size_ok(0));
+        assert!(!raster_size_ok(device_size_64ths(0.001, 1.0)));
+        assert!(raster_size_ok(device_size_64ths(16.0, 2.0)));
+        assert!(raster_size_ok(device_size_64ths(MAX_RASTER_PX_PER_EM, 1.0)));
+        assert!(!raster_size_ok(device_size_64ths(1e6, 1.0)));
+        assert!(!raster_size_ok(u32::MAX));
+    }
+
+    fn key(glyph: u16) -> CacheKey {
+        CacheKey {
+            font: crate::context::tests_support::font_id(0),
+            glyph,
+            size: 1024,
+            subpixel: 0,
+            bold: false,
+            oblique: false,
+        }
+    }
+
+    fn mask(bytes: usize) -> Option<Arc<GlyphMask>> {
+        Some(Arc::new(GlyphMask {
+            width: u32::try_from(bytes).unwrap_or(0),
+            height: 1,
+            left: 0,
+            top: 0,
+            data: vec![0; bytes],
+        }))
+    }
+
+    #[test]
+    fn cache_respects_byte_budget() {
+        let mut cache = GlyphCache::new();
+        let big = MAX_CACHED_MASK_BYTES; // largest cacheable mask
+        for g in 0..200u16 {
+            cache.insert(key(g), mask(big));
+            assert!(cache.bytes <= MAX_CACHE_BYTES);
+            let real: usize = cache
+                .masks
+                .values()
+                .map(|m| m.as_ref().map_or(0, |m| m.data.len()))
+                .sum();
+            assert_eq!(real, cache.bytes);
+        }
+        // Oversized masks are not cached.
+        cache.clear();
+        cache.insert(key(1), mask(MAX_CACHED_MASK_BYTES + 1));
+        assert!(cache.masks.is_empty());
+        assert_eq!(cache.bytes, 0);
+        // Replacing an entry does not double count.
+        cache.insert(key(2), mask(100));
+        cache.insert(key(2), mask(10));
+        assert_eq!(cache.bytes, 10);
+        // Entry budget still applies.
+        cache.clear();
+        for g in 0..=u16::try_from(MAX_CACHE_ENTRIES).unwrap_or(u16::MAX) {
+            cache.insert(key(g), None);
+        }
+        assert!(cache.masks.len() <= MAX_CACHE_ENTRIES);
     }
 
     #[test]

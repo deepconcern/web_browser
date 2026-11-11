@@ -47,12 +47,63 @@ pub fn paragraph_direction(text: &str) -> Option<Direction> {
     }
 }
 
-/// Resolved bidi levels for a whole text.
+/// Resolved bidi levels for a whole text (UAX #9 up to rule I2).
 pub(crate) struct BidiLevels {
     /// The embedding level of each byte of the text.
     pub(crate) levels: Vec<u8>,
     /// The direction of the first paragraph.
     pub(crate) base: Direction,
+}
+
+/// The paragraph-wide analysis that shaping needs (bidi embedding levels
+/// and the base direction), computed once per text.
+///
+/// Layout shapes a paragraph, then reshapes each line with
+/// [`FontContext::shape_analyzed`](crate::FontContext::shape_analyzed)
+/// passing the same analysis, so reshaping a line costs O(line), not
+/// O(paragraph).
+pub struct TextAnalysis {
+    pub(crate) bidi: BidiLevels,
+}
+
+impl std::fmt::Debug for TextAnalysis {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextAnalysis")
+            .field("len", &self.bidi.levels.len())
+            .field("base", &self.bidi.base)
+            .finish()
+    }
+}
+
+impl TextAnalysis {
+    /// Analyzes `text`. `direction` forces the paragraph direction (CSS
+    /// `direction`); `None` detects it (UAX #9 P2/P3), defaulting to
+    /// left-to-right.
+    pub fn new(text: &str, direction: Option<Direction>) -> Self {
+        Self {
+            bidi: resolve_levels(text, direction),
+        }
+    }
+
+    /// The base direction of the (first) paragraph.
+    pub fn base_direction(&self) -> Direction {
+        self.bidi.base
+    }
+
+    /// The length in bytes of the analyzed text.
+    pub fn len(&self) -> usize {
+        self.bidi.levels.len()
+    }
+
+    /// Whether the analyzed text was empty.
+    pub fn is_empty(&self) -> bool {
+        self.bidi.levels.is_empty()
+    }
+
+    /// The embedding level of the character at byte `offset`.
+    pub fn level_at(&self, offset: usize) -> Option<u8> {
+        self.bidi.levels.get(offset).copied()
+    }
 }
 
 /// Resolves the embedding level of every byte of `text` (UAX #9 up to
