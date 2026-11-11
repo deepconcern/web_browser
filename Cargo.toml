@@ -13,6 +13,7 @@ rust-version = "1.97"
 [workspace.dependencies]
 serde_json = "1"
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
+encoding_rs = { version = "0.8.35", default-features = false, features = ["alloc"] }
 
 # Project rules from AGENTS.md, enforced by the compiler and clippy.
 [workspace.lints.rust]
