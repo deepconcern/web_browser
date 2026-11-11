@@ -1,0 +1,4 @@
+{
+  "_comment": "Written by `cargo xtask sites`: the last result per target site (pass, fail or no-reference). Feeds the \"Target sites\" row of docs/scorecard.md.",
+  "sites": {}
+}

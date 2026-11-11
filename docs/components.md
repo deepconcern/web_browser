@@ -8,7 +8,7 @@ code.
 | Component | Used by | License | Origin | Plan |
 |---|---|---|---|---|
 | `serde_json` | `xtask` (tooling only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
-| `png` | `wb-image`, `wb-shell` (encoding rendered pages for tests and reference rendering) | MIT/Apache-2.0 (deps MIT/Apache-2.0/Zlib) | image-rs project | Keep for M1. Chosen over the `image` crate: same decoders, smaller tree |
+| `png` | `wb-image`, `wb-shell` (encoding rendered pages for tests and reference rendering), `xtask` (reading and writing target-site reference images) | MIT/Apache-2.0 (deps MIT/Apache-2.0/Zlib) | image-rs project | Keep for M1. Chosen over the `image` crate: same decoders, smaller tree |
 | `zune-jpeg`, `zune-core` | `wb-image` | MIT/Apache-2.0/Zlib | Independent (zune-image) | Keep for M1 |
 | `gif` | `wb-image` | MIT/Apache-2.0 (dep `weezl` MIT/Apache-2.0) | image-rs project | Keep for M1 |
 | `image-webp` | `wb-image` | MIT/Apache-2.0 (deps MIT/Apache-2.0) | image-rs project | Keep for M1 |
@@ -20,7 +20,7 @@ code.
 | `unicode-script` | `wb-text` | MIT/Apache-2.0 | Independent | Keep (Script property data) |
 | `unicode-bidi` | `wb-text` | MIT/Apache-2.0 | Servo project, standalone crate | Temporary scaffolding; replace with our own UAX #9 when full bidi lands |
 | `rusqlite` (with `libsqlite3-sys`, `bundled`) | `wb-storage` | MIT (bundled SQLite C library: public domain) | Independent | Keep |
-| `tempfile` | `wb-storage` (dev-dependency, tests only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
+| `tempfile` | `wb-storage`, `xtask` (dev-dependency, tests only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
 | `url` | `wb-url` | MIT/Apache-2.0 | Servo project, standalone crate | Keep for M1; replace with our own WHATWG URL parser later |
 | Public Suffix List data (`crates/url/data/public_suffix_list.dat`, fetched 2026-11-10 from github.com/publicsuffix/list, sha256 `7bd9c547…6da4`) | `wb-url` | MPL-2.0 | Mozilla / PSL project (data, not code) | Keep; refresh periodically. Lookup algorithm is our own |
 | `hyper`, `hyper-util`, `http`, `http-body-util`, `tower-service` | `wb-net` | MIT (`http`: MIT/Apache-2.0) | Independent (hyperium) | Keep |

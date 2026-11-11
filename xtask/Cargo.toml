@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Project automation: layer check, corpus fetching and conformance runs."
+description = "Project automation: layer check, corpus fetching, conformance runs and target-site reference rendering."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,14 @@ publish = false
 serde_json.workspace = true
 wb-dom = { path = "../crates/dom" }
 wb-html = { path = "../crates/html" }
+wb-net = { path = "../crates/net" }
+wb-shell = { path = "../crates/shell" }
+wb-text = { path = "../crates/text" }
+wb-url = { path = "../crates/url" }
+png = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

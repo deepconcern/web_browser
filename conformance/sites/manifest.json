@@ -1,0 +1,38 @@
+{
+  "_comment": "M1 target sites (issue #3 Q1, issue #16). Pages are not committed: `cargo xtask snapshots` downloads each pinned resource from its archived source into target/snapshots/<site>/<sha256>; `cargo xtask snapshots --discover [site]` re-pins a site from the web archive at its timestamp. `cargo xtask sites` renders each site at width x height CSS px and compares it with conformance/sites/reference/<site>.png.",
+  "archive": "https://web.archive.org/web/{timestamp}id_/{url}",
+  "sites": [
+    {
+      "height": 1280,
+      "name": "wikipedia-web-browser",
+      "resources": [],
+      "timestamp": "20261101000000",
+      "url": "https://en.wikipedia.org/wiki/Web_browser",
+      "width": 1024
+    },
+    {
+      "height": 1280,
+      "name": "hn-front-page",
+      "resources": [],
+      "timestamp": "20261101000000",
+      "url": "https://news.ycombinator.com/",
+      "width": 1024
+    },
+    {
+      "height": 1280,
+      "name": "hn-comment-page",
+      "resources": [],
+      "timestamp": "20261101000000",
+      "url": "https://news.ycombinator.com/item?id=8863",
+      "width": 1024
+    },
+    {
+      "height": 1280,
+      "name": "rust-blog",
+      "resources": [],
+      "timestamp": "20261101000000",
+      "url": "https://blog.rust-lang.org/",
+      "width": 1024
+    }
+  ]
+}

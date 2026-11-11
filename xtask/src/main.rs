@@ -6,10 +6,18 @@
 //! - `conformance [--check [--base <baseline.json>] | --update-baseline]`: run the
 //!   conformance suites, regenerate `docs/scorecard.md`, and compare against the
 //!   committed baseline (and optionally the target branch's baseline).
+//! - `snapshots [--discover [site...]]`: download the pinned target-site
+//!   snapshots (or re-pin sites); see `snapshots.rs`.
+//! - `sites [--update]`: render the target sites from their snapshots and
+//!   compare them with the reference images; see `sites.rs`.
 
 mod conformance;
 mod corpora;
+mod imgdiff;
 mod layers;
+mod sha256;
+mod sites;
+mod snapshots;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -23,6 +31,8 @@ fn main() -> ExitCode {
         Some("layers") => layers::run(&root),
         Some("fetch-corpora") => corpora::fetch(&root),
         Some("conformance") => conformance::run(&root, args.get(1..).unwrap_or_default()),
+        Some("snapshots") => snapshots::run(&root, args.get(1..).unwrap_or_default()),
+        Some("sites") => sites::run(&root, args.get(1..).unwrap_or_default()),
         _ => Err(usage()),
     };
     match result {
@@ -36,7 +46,8 @@ fn main() -> ExitCode {
 
 fn usage() -> String {
     "usage: cargo xtask <layers | fetch-corpora | \
-     conformance [--check [--base <baseline.json>] | --update-baseline]>"
+     conformance [--check [--base <baseline.json>] | --update-baseline] | \
+     snapshots [--discover [site...]] | sites [--update]>"
         .to_string()
 }
 

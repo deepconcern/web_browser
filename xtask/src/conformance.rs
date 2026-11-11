@@ -64,7 +64,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<()> {
     }
 
     let scorecard = root.join("docs").join("scorecard.md");
-    std::fs::write(&scorecard, render_scorecard(&results))
+    std::fs::write(&scorecard, render_scorecard(root, &results)?)
         .map_err(|e| format!("cannot write {}: {e}", scorecard.display()))?;
 
     let baseline_path = root.join("conformance").join("baseline.json");
@@ -493,7 +493,7 @@ fn display_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn render_scorecard(results: &[SuiteResult]) -> String {
+fn render_scorecard(root: &Path, results: &[SuiteResult]) -> Result<String> {
     let mut out = String::new();
     out.push_str("# Conformance scorecard\n\n");
     out.push_str(
@@ -513,11 +513,16 @@ fn render_scorecard(results: &[SuiteResult]) -> String {
             r.title, r.passed, r.total
         );
     }
+    // Not a conformance suite (CI doesn't render the target sites), so it
+    // comes from the committed result of `cargo xtask sites`.
+    out.push_str(&crate::sites::scorecard_row(root)?);
+    out.push('\n');
     out.push_str(
         "\nThe rest of web-platform-tests (reftests and testharness.js tests) is not run yet: \
          it needs the M1 rendering pipeline and, later, a JavaScript engine.\n",
     );
-    out
+    out.push_str(&crate::sites::scorecard_note(root)?);
+    Ok(out)
 }
 
 fn read_baseline(path: &Path) -> Result<BTreeMap<String, u64>> {

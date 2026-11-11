@@ -1750,9 +1750,15 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 name = "xtask"
 version = "0.0.1"
 dependencies = [
+ "png",
  "serde_json",
+ "tempfile",
  "wb-dom",
  "wb-html",
+ "wb-net",
+ "wb-shell",
+ "wb-text",
+ "wb-url",
 ]
 
 [[package]]
