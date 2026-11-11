@@ -1,7 +1,9 @@
 //! Display lists, rasterization and hit testing.
 //!
-//! The pipeline (issue #3 §B.1): layout produces a fragment tree; a builder
-//! on the layout side turns it into a [`DisplayList`]; [`rasterize`] draws
+//! The pipeline (issue #3 §B.1): layout produces a fragment tree;
+//! [`build_display_list`] turns it into a [`DisplayList`] in CSS 2.2
+//! Appendix E painting order (see [`build`] for the order, clips and hit
+//! tags); [`rasterize`] draws
 //! the list with tiny-skia (ADR-0002) into a [`Raster`] of premultiplied
 //! RGBA8 pixels that the shell uploads as a texture; [`hit_test`] maps a
 //! pointer position back to the tagged items under it, for links, form
@@ -50,6 +52,7 @@
 //! tiny-skia is private to this crate: no type of its appears in this API.
 
 mod border;
+pub mod build;
 mod geom;
 mod hit;
 mod list;
@@ -61,6 +64,10 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 
+pub use build::{
+    BuildOptions, HitTarget, NoResources, PaintResources, build_display_list, fragment_tag,
+    resolve_hit,
+};
 pub use geom::{Color, CornerRadii, Point, Radius, Rect, RoundedRect};
 pub use hit::{Hit, hit_test, hit_test_topmost};
 pub use list::{

@@ -1562,7 +1562,12 @@ name = "wb-paint"
 version = "0.0.1"
 dependencies = [
  "tiny-skia",
+ "wb-css",
+ "wb-dom",
+ "wb-html",
  "wb-image",
+ "wb-layout",
+ "wb-style",
  "wb-text",
 ]
 
