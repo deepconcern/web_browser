@@ -12,6 +12,20 @@ rust-version = "1.97"
 
 [workspace.dependencies]
 serde_json = "1"
+url = { version = "2.5.8", default-features = false, features = ["std"] }
+# wb-net (HTTP stack). TLS uses the ring provider only: no aws-lc-rs, no webpki-roots.
+brotli-decompressor = { version = "6.3.1", default-features = false, features = ["std"] }
+bytes = { version = "1.12.1", default-features = false, features = ["std"] }
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+http = { version = "1.5.0", default-features = false, features = ["std"] }
+http-body-util = { version = "0.1.5", default-features = false }
+hyper = { version = "1.12.0", default-features = false }
+hyper-util = { version = "0.1.21", default-features = false }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = { version = "0.7.1", default-features = false }
+tokio = { version = "1.54.1", default-features = false }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+tower-service = { version = "0.3.3", default-features = false }
 cssparser = { version = "0.38.0", default-features = false }
 encoding_rs = { version = "0.8.35", default-features = false, features = ["alloc"] }
 
