@@ -1,0 +1,12 @@
+/*
+ * HTML §15.3.3 and §15.3.8: rules that apply only in quirks mode.
+ */
+form { margin-bottom: 1em; }
+table {
+  font-weight: initial;
+  font-style: initial;
+  font-size: initial;
+  line-height: initial;
+  white-space: initial;
+  text-align: initial;
+}

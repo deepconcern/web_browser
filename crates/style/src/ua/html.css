@@ -1,0 +1,233 @@
+/*
+ * The user-agent stylesheet, following HTML §15 "Rendering"
+ * (https://html.spec.whatwg.org/multipage/rendering.html).
+ * Logical properties are written as their physical equivalents for a
+ * left-to-right, horizontal writing mode (the only one in M1).
+ */
+
+/* §15.3.1 Hidden elements */
+area, base, basefont, datalist, head, link, meta, noembed,
+noframes, param, rp, script, style, template, title {
+  display: none;
+}
+[hidden]:not([hidden=until-found i]):not(embed) { display: none; }
+embed[hidden] { display: inline; height: 0; width: 0; }
+input[type=hidden i] { display: none !important; }
+
+/* §15.3.2 The page */
+html, body { display: block; }
+body { margin: 8px; }
+
+/* §15.3.3 Flow content */
+address, blockquote, center, dialog, div, figure, figcaption, footer, form,
+header, hr, legend, listing, main, p, plaintext, pre, search, xmp {
+  display: block;
+}
+blockquote, figure, listing, p, plaintext, pre, xmp {
+  margin-top: 1em; margin-bottom: 1em;
+}
+blockquote, figure { margin-left: 40px; margin-right: 40px; }
+address { font-style: italic; }
+listing, plaintext, pre, xmp {
+  font-family: monospace; white-space: pre;
+}
+dialog:not([open]) { display: none; }
+dialog {
+  position: absolute;
+  left: 0; right: 0;
+  width: fit-content;
+  height: fit-content;
+  margin: auto;
+  border: solid;
+  padding: 1em;
+  background-color: Canvas;
+  color: CanvasText;
+}
+slot { display: contents; }
+center { text-align: center; }
+
+/* §15.3.4 Phrasing content */
+cite, dfn, em, i, var { font-style: italic; }
+b, strong { font-weight: bolder; }
+code, kbd, samp, tt { font-family: monospace; }
+big { font-size: larger; }
+small { font-size: smaller; }
+sub { vertical-align: sub; }
+sup { vertical-align: super; }
+sub, sup { line-height: normal; font-size: smaller; }
+ruby { display: ruby; }
+rt { display: ruby-text; }
+:link { color: #0000EE; }
+:visited { color: #551A8B; }
+:link:active, :visited:active { color: #FF0000; }
+:link, :visited { text-decoration: underline; cursor: pointer; }
+mark { background: yellow; color: black; }
+abbr[title], acronym[title] { text-decoration: dotted underline; }
+ins, u { text-decoration: underline; }
+del, s, strike { text-decoration: line-through; }
+q::before { content: open-quote; }
+q::after { content: close-quote; }
+nobr { white-space: nowrap; }
+nobr wbr { white-space: normal; }
+
+/* §15.3.6 Sections and headings */
+article, aside, h1, h2, h3, h4, h5, h6, hgroup, nav, section {
+  display: block;
+}
+h1 { margin-top: 0.67em; margin-bottom: 0.67em; font-size: 2.00em; font-weight: bold; }
+h2 { margin-top: 0.83em; margin-bottom: 0.83em; font-size: 1.50em; font-weight: bold; }
+h3 { margin-top: 1.00em; margin-bottom: 1.00em; font-size: 1.17em; font-weight: bold; }
+h4 { margin-top: 1.33em; margin-bottom: 1.33em; font-size: 1.00em; font-weight: bold; }
+h5 { margin-top: 1.67em; margin-bottom: 1.67em; font-size: 0.83em; font-weight: bold; }
+h6 { margin-top: 2.33em; margin-bottom: 2.33em; font-size: 0.67em; font-weight: bold; }
+:is(article, aside, nav, section) h1 {
+  margin-top: 0.83em; margin-bottom: 0.83em; font-size: 1.50em;
+}
+:is(article, aside, nav, section) :is(article, aside, nav, section) h1 {
+  margin-top: 1.00em; margin-bottom: 1.00em; font-size: 1.17em;
+}
+:is(article, aside, nav, section) :is(article, aside, nav, section) :is(article, aside, nav, section) h1 {
+  margin-top: 1.33em; margin-bottom: 1.33em; font-size: 1.00em;
+}
+
+/* §15.3.7 Lists */
+dir, dd, dl, dt, menu, ol, ul { display: block; }
+li { display: list-item; text-align: match-parent; }
+dir, dl, menu, ol, ul { margin-top: 1em; margin-bottom: 1em; }
+:is(dir, dl, menu, ol, ul) :is(dir, dl, menu, ol, ul) {
+  margin-top: 0; margin-bottom: 0;
+}
+dd { margin-left: 40px; }
+dir, menu, ol, ul { padding-left: 40px; }
+ol, ul, menu { counter-reset: list-item; }
+ol { list-style-type: decimal; }
+dir, menu, ul { list-style-type: disc; }
+:is(dir, menu, ol, ul) :is(dir, menu, ul) { list-style-type: circle; }
+:is(dir, menu, ol, ul) :is(dir, menu, ol, ul) :is(dir, menu, ul) {
+  list-style-type: square;
+}
+
+/* §15.3.8 Tables */
+table { display: table; }
+caption { display: table-caption; }
+colgroup, colgroup[hidden] { display: table-column-group; }
+col, col[hidden] { display: table-column; }
+thead, thead[hidden] { display: table-header-group; }
+tbody, tbody[hidden] { display: table-row-group; }
+tfoot, tfoot[hidden] { display: table-footer-group; }
+tr, tr[hidden] { display: table-row; }
+td, th { display: table-cell; }
+colgroup[hidden], col[hidden], thead[hidden], tbody[hidden],
+tfoot[hidden], tr[hidden] {
+  visibility: collapse;
+}
+table {
+  box-sizing: border-box;
+  border-spacing: 2px;
+  border-collapse: separate;
+  text-indent: initial;
+}
+td, th { padding: 1px; }
+th { font-weight: bold; text-align: center; }
+caption { text-align: center; }
+thead, tbody, tfoot, table > tr { vertical-align: middle; }
+tr, td, th { vertical-align: inherit; }
+table, td, th { border-color: gray; }
+thead, tbody, tfoot, tr { border-color: inherit; }
+table:is([rules=none i], [rules=groups i], [rules=rows i], [rules=cols i], [rules=all i]),
+table:is([frame=void i], [frame=above i], [frame=below i], [frame=hsides i],
+         [frame=lhs i], [frame=rhs i], [frame=vsides i], [frame=box i], [frame=border i]) {
+  border-style: hidden;
+  border-collapse: collapse;
+}
+table:is([rules=all i], [rules=rows i], [rules=cols i]) > tr > :is(td, th),
+table:is([rules=all i], [rules=rows i], [rules=cols i]) > :is(thead, tbody, tfoot) > tr > :is(td, th) {
+  border-width: 1px;
+  border-style: solid;
+}
+
+/* §15.3.10 Form controls (appearance is approximated with borders) */
+input, select, button, textarea {
+  letter-spacing: initial;
+  word-spacing: initial;
+  line-height: initial;
+  text-transform: initial;
+  text-indent: initial;
+}
+input, select, textarea { text-align: initial; }
+input:is([type=reset i], [type=button i], [type=submit i]), button {
+  text-align: center;
+}
+input, button, select, textarea, meter, progress { display: inline-block; }
+input, select, button, textarea { font: 13.333px sans-serif; color: FieldText; }
+input:not([type=checkbox i], [type=radio i], [type=image i], [type=range i]),
+textarea {
+  border: 2px inset ButtonBorder;
+  padding: 1px 2px;
+  background-color: Field;
+}
+input:is([type=radio i], [type=checkbox i], [type=reset i], [type=button i],
+         [type=submit i], [type=color i], [type=search i]),
+select, button {
+  box-sizing: border-box;
+}
+input:is([type=reset i], [type=button i], [type=submit i]), button, select {
+  border: 2px outset ButtonBorder;
+  padding: 1px 6px;
+  background-color: ButtonFace;
+  color: ButtonText;
+}
+input:is([type=checkbox i], [type=radio i]) {
+  width: 13px; height: 13px;
+  margin: 3px 3px 3px 4px;
+  border: 1px solid ButtonBorder;
+}
+textarea { white-space: pre-wrap; overflow: auto; }
+select > *, datalist { display: none; }
+input:disabled, select:disabled, textarea:disabled, button:disabled { color: GrayText; }
+
+/* §15.3.11 The hr element */
+hr {
+  color: gray;
+  border-style: inset;
+  border-width: 1px;
+  margin: 0.5em auto;
+  overflow: hidden;
+}
+
+/* §15.3.12 The fieldset and legend elements */
+fieldset {
+  display: block;
+  margin-left: 2px; margin-right: 2px;
+  border: groove 2px ThreeDFace;
+  padding: 0.35em 0.75em 0.625em;
+  min-width: min-content;
+}
+legend { padding-left: 2px; padding-right: 2px; }
+
+/* §15.4 Replaced elements */
+iframe { border: 2px inset; }
+audio:not([controls]) { display: none !important; }
+
+/* §15.5.4 The details and summary elements */
+details, summary { display: block; }
+details > summary:first-of-type {
+  display: list-item;
+  counter-increment: list-item 0;
+  list-style: disclosure-closed inside;
+}
+details[open] > summary:first-of-type { list-style-type: disclosure-open; }
+/* M1 follow-up: the details content slot; this approximates it. */
+details:not([open]) > :not(summary:first-of-type) { display: none; }
+
+/* §15.5.13 The marquee element */
+marquee { display: inline-block; text-align: initial; overflow: hidden !important; }
+
+/* §15.5.15 The meter and progress elements */
+meter, progress { width: 10em; height: 1em; vertical-align: -0.2em; }
+
+/* CSS Lists 3 §3: the ::marker UA rules */
+::marker {
+  white-space: pre;
+  text-transform: none;
+}
