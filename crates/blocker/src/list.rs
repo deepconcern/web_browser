@@ -124,9 +124,17 @@ struct Frame {
 /// ...) is false for this browser: we are none of those environments and
 /// claim none of those capabilities, so `!#if !env_safari` blocks are kept and
 /// `!#if env_chromium` blocks are skipped. Malformed expressions are false.
+///
+/// At most [`MAX_DEPTH`] frames are kept. Deeper `!#if`s are only counted:
+/// their blocks are inactive (including `!#else` branches) until the
+/// matching `!#endif`. [`Conditions::active`] is O(1).
 #[derive(Debug, Default)]
 pub(crate) struct Conditions {
     stack: Vec<Frame>,
+    /// Number of kept frames whose current branch is false.
+    inactive: usize,
+    /// Number of `!#if`s nested beyond `MAX_DEPTH`.
+    overflow: usize,
 }
 
 /// Maximum `!#if` nesting and expression depth, so hostile input cannot
@@ -136,7 +144,7 @@ const MAX_DEPTH: usize = 64;
 impl Conditions {
     /// Whether lines are currently being read.
     pub(crate) fn active(&self) -> bool {
-        self.stack.iter().all(|f| f.cond != f.in_else)
+        self.inactive == 0 && self.overflow == 0
     }
 
     /// Handles a line that starts with `!#`. Returns false if it is not a
@@ -148,19 +156,40 @@ impl Conditions {
         };
         match word {
             "if" => {
-                let cond = self.stack.len() < MAX_DEPTH && eval(arg).unwrap_or(false);
-                self.stack.push(Frame {
-                    cond,
-                    in_else: false,
-                });
+                if self.overflow > 0 || self.stack.len() >= MAX_DEPTH {
+                    self.overflow += 1;
+                } else {
+                    let cond = eval(arg).unwrap_or(false);
+                    if !cond {
+                        self.inactive += 1;
+                    }
+                    self.stack.push(Frame {
+                        cond,
+                        in_else: false,
+                    });
+                }
             }
             "else" => {
-                if let Some(top) = self.stack.last_mut() {
+                if self.overflow == 0
+                    && let Some(top) = self.stack.last_mut()
+                {
+                    // The branch flips between true and false.
+                    if top.cond == top.in_else {
+                        self.inactive = self.inactive.saturating_sub(1);
+                    } else {
+                        self.inactive += 1;
+                    }
                     top.in_else = !top.in_else;
                 }
             }
             "endif" => {
-                self.stack.pop();
+                if self.overflow > 0 {
+                    self.overflow -= 1;
+                } else if let Some(top) = self.stack.pop()
+                    && top.cond == top.in_else
+                {
+                    self.inactive = self.inactive.saturating_sub(1);
+                }
             }
             // Includes are resolved by whoever downloads the list; here
             // they are ignored.
@@ -325,5 +354,48 @@ mod tests {
         assert!(c.directive("endif")); // unbalanced: ignored
         assert!(c.active());
         assert!(!c.directive("########"));
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+
+    #[test]
+    fn overflowed_if_blocks_stay_inactive_and_balance() {
+        let mut c = Conditions::default();
+        for _ in 0..MAX_DEPTH * 4 {
+            assert!(c.directive("if !env_x"));
+        }
+        assert!(c.stack.len() <= MAX_DEPTH);
+        assert!(!c.active());
+        // `else` inside an overflowed block must not activate it.
+        assert!(c.directive("else"));
+        assert!(!c.active());
+        for _ in 0..MAX_DEPTH * 3 {
+            assert!(c.directive("endif"));
+        }
+        // Back within the cap: all remaining frames are true.
+        assert!(c.active());
+        for _ in 0..MAX_DEPTH {
+            assert!(c.directive("endif"));
+        }
+        assert!(c.active());
+        assert!(c.stack.is_empty());
+    }
+
+    #[test]
+    fn many_directives_are_fast() {
+        let mut c = Conditions::default();
+        for _ in 0..MAX_DEPTH {
+            c.directive("if !env_x");
+        }
+        let t = std::time::Instant::now();
+        for _ in 0..200_000 {
+            c.directive("if env_x");
+            c.directive("else");
+            assert!(!c.active());
+        }
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
     }
 }

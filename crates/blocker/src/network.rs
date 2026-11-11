@@ -282,7 +282,10 @@ fn parse_pattern(text: &str, match_case: bool) -> Result<Pattern, Reject> {
             b.to_ascii_lowercase()
         });
     }
-    if bytes.first() == Some(&b'*') {
+    // `|*x` and `*x` can start anywhere, so the leading `*` is implicit.
+    // `||*x` still has to start at a host label boundary, so it keeps both
+    // the anchor and the `*`.
+    if bytes.first() == Some(&b'*') && anchor != Anchor::Host {
         anchor = Anchor::None;
         bytes.remove(0);
     }

@@ -337,7 +337,9 @@ impl Engine {
                 .find(&probe.source, host, false, |f| f.page_flags & flag != 0)
                 .is_some()
         };
-        if flags(PAGE_ELEMHIDE) {
+        // A `$document` exception turns off all filtering on the page,
+        // element hiding included.
+        if flags(PAGE_ELEMHIDE | PAGE_DOCUMENT) {
             return CosmeticSelectors::default();
         }
         let (generic, specific) =

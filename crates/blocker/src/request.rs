@@ -149,6 +149,35 @@ fn url_tokens(url: &[u8]) -> Vec<u64> {
     out
 }
 
+/// Whether `s` is a URL rather than a bare host: it has `://`, or starts
+/// with a valid scheme (RFC 3986 section 3.1) followed by `:` and something
+/// that is not a port number, as in `data:...`, `about:blank`, `blob:...`.
+fn is_url(s: &str) -> bool {
+    if s.contains("://") {
+        return true;
+    }
+    let Some((scheme, rest)) = s.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && !rest.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && !rest.is_empty()
+}
+
+/// Drops a `:port` suffix from a bare `host:port` (not from `[v6]`).
+fn strip_port(host: &str) -> &str {
+    match host.rsplit_once(':') {
+        Some((h, port))
+            if !h.is_empty() && !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            h
+        }
+        _ => host,
+    }
+}
+
 /// The byte range of the host in an absolute URL (`scheme://host...`).
 pub(crate) fn host_range(url: &str) -> Option<(usize, usize)> {
     let colon = url.find("://")?;
@@ -204,12 +233,12 @@ impl<'a> Request<'a> {
         same_site: bool,
     ) -> Self {
         let url = Target::new(Cow::Borrowed(url));
-        let (source, source_host) = if source.contains("://") {
+        let (source, source_host) = if is_url(source) {
             let t = Target::new(Cow::Borrowed(source));
             let host = normalize_host(t.host());
             (t, host)
         } else {
-            let host = normalize_host(source);
+            let host = normalize_host(strip_port(source));
             let synthetic = if host.is_empty() {
                 String::new()
             } else {

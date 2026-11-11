@@ -568,3 +568,69 @@ fn speed_100k_rules_10k_requests() {
     assert!(matching < Duration::from_secs(10), "{matching:?}");
     assert!(build < Duration::from_secs(30), "{build:?}");
 }
+
+#[test]
+fn host_anchor_with_leading_wildcard_stays_host_anchored() {
+    let e = engine("||*https^$image\n");
+    // The scheme is before the host, so `||*` cannot reach it.
+    assert!(!blocked(
+        &e,
+        "https://clean.test/a.png",
+        PAGE,
+        ResourceType::Image,
+        false
+    ));
+    // After a host label boundary, anything may follow.
+    assert!(blocked(
+        &e,
+        "https://x.test/https/a.png",
+        PAGE,
+        ResourceType::Image,
+        false
+    ));
+}
+
+#[test]
+fn document_exception_disables_cosmetic_filtering() {
+    let e = engine("##.ad\ntrusted.test##.promo\n@@||trusted.test^$document\n");
+    assert!(
+        e.cosmetic_selectors("https://www.trusted.test/p")
+            .is_empty()
+    );
+    assert_eq!(e.cosmetic_selectors("https://other.test/").generic, [".ad"]);
+}
+
+#[test]
+fn hostless_source_urls_stay_hostless() {
+    let r = Request::new(
+        "https://ads.example/x",
+        "data:text/plain,www.news.test",
+        ResourceType::Image,
+        false,
+    );
+    assert_eq!(r.source_host(), "");
+    let r = Request::new(
+        "https://ads.example/x",
+        "about:blank",
+        ResourceType::Image,
+        false,
+    );
+    assert_eq!(r.source_host(), "");
+    // A bare host with a port is still a host.
+    let r = Request::new(
+        "https://ads.example/x",
+        "news.test:8080",
+        ResourceType::Image,
+        false,
+    );
+    assert_eq!(r.source_host(), "news.test");
+    let e = engine("||ads.example^$domain=news.test\n");
+    assert!(!blocked(
+        &e,
+        "https://ads.example/x",
+        "data:text/plain,www.news.test",
+        ResourceType::Image,
+        false
+    ));
+    assert!(e.cosmetic_selectors("data:text/html,news.test").is_empty());
+}
