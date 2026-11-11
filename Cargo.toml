@@ -18,6 +18,8 @@ zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
 zune-core = { version = "0.5.1", default-features = false, features = ["std"] }
 gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image-webp = { version = "0.2.4", default-features = false }
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
+tempfile = "3.27.0"
 url = { version = "2.5.8", default-features = false, features = ["std"] }
 # wb-net (HTTP stack). TLS uses the ring provider only: no aws-lc-rs, no webpki-roots.
 brotli-decompressor = { version = "6.3.1", default-features = false, features = ["std"] }
