@@ -10,6 +10,8 @@ publish = false
 
 [dependencies]
 serde_json.workspace = true
+wb-dom = { path = "../crates/dom" }
+wb-html = { path = "../crates/html" }
 
 [lints]
 workspace = true
