@@ -264,6 +264,9 @@ struct Node {
     last_child: Option<NodeId>,
     previous_sibling: Option<NodeId>,
     next_sibling: Option<NodeId>,
+    /// For a template's contents fragment, the template element (DOM's
+    /// "host" of a template contents fragment).
+    host: Option<NodeId>,
     data: NodeData,
 }
 
@@ -291,6 +294,7 @@ impl Document {
                 last_child: None,
                 previous_sibling: None,
                 next_sibling: None,
+                host: None,
                 data: NodeData::Document {
                     quirks_mode: QuirksMode::NoQuirks,
                 },
@@ -342,6 +346,7 @@ impl Document {
             last_child: None,
             previous_sibling: None,
             next_sibling: None,
+            host: None,
             data,
         });
         id
@@ -358,12 +363,16 @@ impl Document {
         let local_name = local_name.into();
         let template_contents = (namespace == Namespace::Html && local_name == "template")
             .then(|| self.push(NodeData::DocumentFragment));
-        self.push(NodeData::Element(ElementData {
+        let element = self.push(NodeData::Element(ElementData {
             namespace,
             local_name,
             attributes,
             template_contents,
-        }))
+        }));
+        if let Some(contents) = template_contents.and_then(|c| self.node_mut(c)) {
+            contents.host = Some(element);
+        }
+        element
     }
 
     /// Creates a detached text node.
@@ -551,6 +560,27 @@ impl Document {
         }
     }
 
+    /// The host of a template contents fragment: its template element.
+    #[must_use]
+    pub fn host(&self, fragment: NodeId) -> Option<NodeId> {
+        self.node(fragment).and_then(|n| n.host)
+    }
+
+    /// Whether `ancestor` is a "host-including inclusive ancestor" of `node`
+    /// (DOM §4.2.2): an inclusive ancestor, following template contents
+    /// fragments up to their template element.
+    #[must_use]
+    pub fn is_host_including_inclusive_ancestor(&self, ancestor: NodeId, node: NodeId) -> bool {
+        let mut current = Some(node);
+        while let Some(n) = current {
+            if n == ancestor {
+                return true;
+            }
+            current = self.parent(n).or_else(|| self.host(n));
+        }
+        false
+    }
+
     /// Whether `ancestor` is `node` or one of its ancestors.
     #[must_use]
     pub fn is_inclusive_ancestor(&self, ancestor: NodeId, node: NodeId) -> bool {
@@ -731,7 +761,7 @@ impl Document {
         }
         if !self.can_have_children(parent)
             || matches!(self.data(child), Some(NodeData::Document { .. }))
-            || self.is_inclusive_ancestor(child, parent)
+            || self.is_host_including_inclusive_ancestor(child, parent)
         {
             return Err(DomError::HierarchyRequest);
         }
@@ -787,6 +817,9 @@ impl Document {
     /// Fails like [`Document::append_child`]; children moved before the
     /// failure stay moved.
     pub fn reparent_children(&mut self, from: NodeId, to: NodeId) -> Result<(), DomError> {
+        if from == to {
+            return Ok(());
+        }
         while let Some(child) = self.first_child(from) {
             self.append_child(to, child)?;
         }
@@ -996,6 +1029,52 @@ mod tests {
         let svg = doc.create_element(Namespace::Svg, "use", vec![xlink]);
         assert_eq!(doc.attribute(svg, "xlink:href"), Some("#a"));
         assert_eq!(doc.attribute(svg, "href"), None);
+    }
+
+    #[test]
+    fn refuses_cycles_through_template_contents() {
+        let mut doc = Document::new();
+        let template = el(&mut doc, "template", &[]);
+        let contents = doc.template_contents(template).unwrap();
+        assert_eq!(doc.host(contents), Some(template));
+        // A template inside its own contents.
+        assert_eq!(
+            doc.append_child(contents, template),
+            Err(DomError::HierarchyRequest)
+        );
+        // A subtree holding the template, inserted into its contents.
+        let div = el(&mut doc, "div", &[]);
+        doc.append_child(div, template).unwrap();
+        assert_eq!(
+            doc.append_child(contents, div),
+            Err(DomError::HierarchyRequest)
+        );
+        // Deeper: an element inside the contents of a nested template.
+        let inner = el(&mut doc, "template", &[]);
+        let inner_contents = doc.template_contents(inner).unwrap();
+        doc.append_child(contents, inner).unwrap();
+        assert_eq!(
+            doc.append_child(inner_contents, div),
+            Err(DomError::HierarchyRequest)
+        );
+        // Ordinary insertion into template contents still works.
+        let p = el(&mut doc, "p", &[]);
+        doc.append_child(inner_contents, p).unwrap();
+        assert_eq!(doc.parent(p), Some(inner_contents));
+    }
+
+    #[test]
+    fn reparenting_children_onto_the_same_node_is_a_no_op() {
+        let (mut doc, _html, _body, p, text) = sample();
+        doc.reparent_children(p, p).unwrap();
+        assert_eq!(doc.children(p).collect::<Vec<_>>(), vec![text]);
+        // Moving children into one of those children fails instead of
+        // looping.
+        let (mut doc, _html, body, p, _text) = sample();
+        assert_eq!(
+            doc.reparent_children(body, p),
+            Err(DomError::HierarchyRequest)
+        );
     }
 
     #[test]

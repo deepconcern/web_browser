@@ -172,7 +172,12 @@ pub fn parse_document_bytes(
 ) -> ParsedDocument {
     let (encoding, confidence) = encoding::sniff(bytes, transport_charset);
     let text = encoding::decode(bytes, encoding);
-    let watch = confidence == Confidence::Tentative;
+    // §13.2.3.4 "changing the encoding while parsing": if the encoding in
+    // use is UTF-16BE/LE, the confidence becomes certain and a declaration
+    // in the document is ignored. A declared UTF-16 means UTF-8 and
+    // x-user-defined means windows-1252 (`adjust_declared` below); a
+    // declaration of the encoding already in use changes nothing.
+    let watch = confidence == Confidence::Tentative && !encoding::is_utf16(encoding);
     let (document, errors, meta) = parse_str(&text, options, watch);
     if let Some(declared) = meta.as_deref().and_then(encoding::lookup) {
         let declared = encoding::adjust_declared(declared);

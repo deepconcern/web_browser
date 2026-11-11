@@ -204,6 +204,44 @@ fn a_late_meta_charset_triggers_a_reparse() {
 }
 
 #[test]
+fn a_utf16_document_is_not_reparsed_for_a_meta_charset() {
+    // No BOM: the prescan detects UTF-16LE from "<?x" (tentative). Per
+    // §13.2.3.4 the encoding is then made certain instead of changed.
+    let text = "<?xml version='1.0'?><meta charset=utf-8><p>é";
+    let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let parsed = parse_document_bytes(&bytes, None, &ParseOptions::default());
+    assert_eq!(parsed.encoding, "UTF-16LE");
+    let doc = &parsed.document;
+    let p = doc.elements_by_tag_name(doc.root(), "p")[0];
+    assert_eq!(doc.text_content(p).as_deref(), Some("é"));
+}
+
+#[test]
+fn late_meta_declarations_are_adjusted() {
+    // A late meta naming UTF-16 means UTF-8, and x-user-defined means
+    // windows-1252 (§13.2.3.4).
+    let late = |declaration: &str, body: &[u8]| {
+        let mut html = b"<!DOCTYPE html><head><!--".to_vec();
+        html.extend(std::iter::repeat_n(b'x', 1100));
+        html.extend_from_slice(b"-->");
+        html.extend_from_slice(declaration.as_bytes());
+        html.extend_from_slice(b"</head><p>");
+        html.extend_from_slice(body);
+        parse_document_bytes(&html, None, &ParseOptions::default())
+    };
+    let parsed = late("<meta charset=utf-16>", "é".as_bytes());
+    assert_eq!(parsed.encoding, "UTF-8");
+    let doc = &parsed.document;
+    let p = doc.elements_by_tag_name(doc.root(), "p")[0];
+    assert_eq!(doc.text_content(p).as_deref(), Some("é"));
+    // The default guess is already windows-1252, so no reparse is needed.
+    assert_eq!(
+        late("<meta charset=x-user-defined>", b"\xe9").encoding,
+        "windows-1252"
+    );
+}
+
+#[test]
 fn survives_deep_nesting_and_garbage() {
     let deep =
         "<div>".repeat(5000) + &"<b><i>".repeat(500) + "<table><tr><td>" + &"</div>".repeat(5000);

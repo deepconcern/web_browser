@@ -83,10 +83,15 @@ pub(crate) fn decode(bytes: &[u8], encoding: &'static Encoding) -> String {
     text.into_owned()
 }
 
+/// Whether `encoding` is UTF-16BE or UTF-16LE.
+pub(crate) fn is_utf16(encoding: &'static Encoding) -> bool {
+    encoding == UTF_16BE || encoding == UTF_16LE
+}
+
 /// Adjusts an encoding found in the document per §13.2.3.2: UTF-16 becomes
 /// UTF-8 and x-user-defined becomes windows-1252.
 pub(crate) fn adjust_declared(encoding: &'static Encoding) -> &'static Encoding {
-    if encoding == UTF_16BE || encoding == UTF_16LE {
+    if is_utf16(encoding) {
         UTF_8
     } else if encoding == X_USER_DEFINED {
         WINDOWS_1252

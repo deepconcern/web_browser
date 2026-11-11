@@ -6,7 +6,7 @@
 //! [`Tokenizer::next_token`], so that the tree builder can switch its state
 //! between tokens, as the spec requires.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use crate::ParseError;
 use crate::entities::{ENTITIES, LONGEST_NAME};
@@ -200,6 +200,12 @@ pub struct Tokenizer {
     tag: Tag,
     tag_is_end: bool,
     attribute: Option<Attribute>,
+    /// Whether the current attribute repeats an earlier name on the tag and
+    /// will be dropped.
+    attribute_is_duplicate: bool,
+    /// The attribute names on the current tag, for linear-time duplicate
+    /// detection.
+    attribute_names: HashSet<String>,
     comment: String,
     doctype: Doctype,
     pi_target: String,
@@ -244,6 +250,8 @@ impl Tokenizer {
             tag: Tag::default(),
             tag_is_end: false,
             attribute: None,
+            attribute_is_duplicate: false,
+            attribute_names: HashSet::new(),
             comment: String::new(),
             doctype: Doctype::default(),
             pi_target: String::new(),
@@ -414,6 +422,8 @@ impl Tokenizer {
         self.tag = Tag::default();
         self.tag_is_end = end;
         self.attribute = None;
+        self.attribute_is_duplicate = false;
+        self.attribute_names.clear();
     }
 
     fn start_attribute(&mut self, name: &str) {
@@ -422,15 +432,28 @@ impl Tokenizer {
             name: name.to_string(),
             value: String::new(),
         });
+        self.attribute_is_duplicate = false;
+    }
+
+    /// Runs when the tokenizer leaves the attribute name state (§13.2.5.33):
+    /// a name already on the token is a duplicate-attribute parse error, and
+    /// that attribute (with the value still to come) is discarded.
+    fn leave_attribute_name(&mut self) {
+        if let Some(attribute) = &self.attribute {
+            if self.attribute_names.contains(&attribute.name) {
+                self.attribute_is_duplicate = true;
+                self.error("duplicate-attribute");
+            } else {
+                self.attribute_names.insert(attribute.name.clone());
+            }
+        }
     }
 
     fn finish_attribute(&mut self) {
-        if let Some(attribute) = self.attribute.take() {
-            if self.tag.attributes.iter().any(|a| a.name == attribute.name) {
-                self.error("duplicate-attribute");
-            } else {
-                self.tag.attributes.push(attribute);
-            }
+        if let Some(attribute) = self.attribute.take()
+            && !std::mem::take(&mut self.attribute_is_duplicate)
+        {
+            self.tag.attributes.push(attribute);
         }
     }
 
@@ -891,9 +914,13 @@ impl Tokenizer {
             // §13.2.5.33
             S::AttributeName => match self.consume() {
                 Some('\t' | '\n' | '\u{c}' | ' ' | '/' | '>') | None => {
+                    self.leave_attribute_name();
                     self.reconsume_in(S::AfterAttributeName);
                 }
-                Some('=') => self.state = S::BeforeAttributeValue,
+                Some('=') => {
+                    self.leave_attribute_name();
+                    self.state = S::BeforeAttributeValue;
+                }
                 Some('\0') => {
                     self.error("unexpected-null-character");
                     self.attribute_name_push('\u{FFFD}');
@@ -1927,6 +1954,47 @@ mod tests {
                 "end-tag-with-attributes"
             ]
         );
+    }
+
+    fn error_codes(input: &str) -> Vec<(&'static str, u32)> {
+        let mut tokenizer = Tokenizer::new(input);
+        while tokenizer.next_token() != Token::Eof {}
+        tokenizer
+            .take_errors()
+            .iter()
+            .map(|e| (e.code, e.column))
+            .collect()
+    }
+
+    #[test]
+    fn duplicate_attribute_is_reported_when_its_name_ends() {
+        // At end of file the tag is never emitted, but the duplicate name
+        // has still been seen.
+        assert_eq!(
+            error_codes("<a x=1 x"),
+            vec![("duplicate-attribute", 8), ("eof-in-tag", 8)]
+        );
+        // Reported at the '=' that ends the name, before the value.
+        assert_eq!(
+            error_codes("<a x=1 x=22>"),
+            vec![("duplicate-attribute", 9)]
+        );
+        let out = tokens("<a x=1 X=2 y x=3>");
+        let Some(Token::StartTag(tag)) = out.first() else {
+            panic!("expected a start tag");
+        };
+        assert_eq!(tag.attributes.len(), 2);
+        assert_eq!(tag.attribute("x"), Some("1"));
+    }
+
+    #[test]
+    fn many_attributes_stay_linear() {
+        let names: String = (0..20_000).map(|i| format!("a{i} ")).collect();
+        let out = tokens(&format!("<a {names}>"));
+        let Some(Token::StartTag(tag)) = out.first() else {
+            panic!("expected a start tag");
+        };
+        assert_eq!(tag.attributes.len(), 20_000);
     }
 
     #[test]
