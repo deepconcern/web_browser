@@ -1574,6 +1574,22 @@ dependencies = [
 [[package]]
 name = "wb-shell"
 version = "0.0.1"
+dependencies = [
+ "encoding_rs",
+ "png",
+ "tempfile",
+ "wb-blocker",
+ "wb-css",
+ "wb-dom",
+ "wb-html",
+ "wb-image",
+ "wb-layout",
+ "wb-net",
+ "wb-paint",
+ "wb-style",
+ "wb-text",
+ "wb-url",
+]
 
 [[package]]
 name = "wb-storage"

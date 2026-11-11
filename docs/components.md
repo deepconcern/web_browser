@@ -8,7 +8,7 @@ code.
 | Component | Used by | License | Origin | Plan |
 |---|---|---|---|---|
 | `serde_json` | `xtask` (tooling only) | MIT/Apache-2.0 | Independent | Keep (not shipped in the browser) |
-| `png` | `wb-image` | MIT/Apache-2.0 (deps MIT/Apache-2.0/Zlib) | image-rs project | Keep for M1. Chosen over the `image` crate: same decoders, smaller tree |
+| `png` | `wb-image`, `wb-shell` (encoding rendered pages for tests and reference rendering) | MIT/Apache-2.0 (deps MIT/Apache-2.0/Zlib) | image-rs project | Keep for M1. Chosen over the `image` crate: same decoders, smaller tree |
 | `zune-jpeg`, `zune-core` | `wb-image` | MIT/Apache-2.0/Zlib | Independent (zune-image) | Keep for M1 |
 | `gif` | `wb-image` | MIT/Apache-2.0 (dep `weezl` MIT/Apache-2.0) | image-rs project | Keep for M1 |
 | `image-webp` | `wb-image` | MIT/Apache-2.0 (deps MIT/Apache-2.0) | image-rs project | Keep for M1 |
@@ -29,7 +29,7 @@ code.
 | `flate2` (miniz_oxide backend) | `wb-net` | MIT/Apache-2.0 | Independent | Keep |
 | `brotli-decompressor` | `wb-net` | BSD-3-Clause/MIT | Dropbox | Keep |
 | `cssparser` 0.38 (default features off; pulls `dtoa-short`, `dtoa`, `itoa`, `smallvec`) | `wb-css` (tokenizer only, private) | MPL-2.0 (deps MIT/Apache-2.0, MPL-2.0) | Servo | Temporary scaffolding: replace with our own CSS Syntax 3 tokenizer |
-| `encoding_rs` | `wb-html` (decoding and charset labels) | (Apache-2.0 OR MIT) AND BSD-3-Clause | Independent crate (written for Gecko, standalone; implements the WHATWG Encoding Standard) | Keep for now; replace only if we write our own Encoding Standard decoders |
+| `encoding_rs` | `wb-html` (decoding and charset labels), `wb-shell` (stylesheet decoding, CSS Syntax 3 §3.2) | (Apache-2.0 OR MIT) AND BSD-3-Clause | Independent crate (written for Gecko, standalone; implements the WHATWG Encoding Standard) | Keep for now; replace only if we write our own Encoding Standard decoders |
 | WHATWG `entities.json` (data) | `wb-html` (named character reference table, generated into `src/entities.rs`) | CC BY 4.0 (HTML Living Standard) | WHATWG specification data | Keep (spec data, not code) |
 | WHATWG HTML §15 Rendering UA stylesheet (adapted) | `wb-style` (`src/ua/html.css`, `src/ua/quirks.css`) | CC BY 4.0 (HTML Living Standard) | WHATWG specification text | Keep (spec data, not code); attribution in the file header |
 | `tiny-skia` 0.12 (features `std`, `simd`; pulls `tiny-skia-path`, `arrayref`, `arrayvec`, `bytemuck`, `cfg-if`, `log`, `strict-num`) | `wb-paint` (rasterizer, private) | BSD-3-Clause (deps: `arrayref` BSD-2-Clause, `strict-num` MIT, others MIT/Apache-2.0 or Zlib/Apache-2.0/MIT) | Independent (linebender; Rust port of a subset of Skia's raster backend, not Chromium code) | Keep for M1 (ADR-0002); a `vello` GPU backend may come later, with tiny-skia kept as the reference renderer |
