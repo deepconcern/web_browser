@@ -315,7 +315,18 @@ fn needs_comment_between(a: &ComponentValue, b: &ComponentValue) -> bool {
                 ..
             }
     );
-    (a_word && b_word) || matches!((a, b), (C::Delim('/'), C::Delim('*')))
+    (a_word && b_word)
+        || matches!(
+            (a, b),
+            (C::Delim('/'), C::Delim('*'))
+                // `~=`, `|=`, `^=`, `$=`, `*=` match tokens.
+                | (C::Delim('~' | '|' | '^' | '$' | '*'), C::Delim('='))
+                // `<!--` (CDO) from `<` `!` `--`.
+                | (C::Delim('<'), C::Delim('!'))
+                | (C::Delim('|'), C::Delim('|'))
+        )
+        // `-->` (CDC) from an ident `--` followed by `>`.
+        || matches!((a, b), (C::Ident(s), C::Delim('>')) if s == "--")
 }
 
 fn serialize_number(n: &Numeric, out: &mut String) {
@@ -346,9 +357,15 @@ fn serialize_one(v: &ComponentValue, out: &mut String) {
             out.push('@');
             let _ = cssparser::serialize_identifier(s, out);
         }
-        C::Hash { value, .. } => {
+        C::Hash { value, is_id } => {
             out.push('#');
-            let _ = cssparser::serialize_name(value, out);
+            // An "id" hash must stay one after re-tokenizing, so it is
+            // serialized as an identifier (`#\31 23`), CSS Syntax 3 §9.
+            if *is_id {
+                let _ = cssparser::serialize_identifier(value, out);
+            } else {
+                let _ = cssparser::serialize_name(value, out);
+            }
         }
         C::String(s) => {
             let _ = cssparser::serialize_string(s, out);
@@ -606,6 +623,10 @@ fn consume_qualified_rule(
 pub(crate) fn consume_block_contents(values: &[ComponentValue]) -> BlockContents<'_> {
     let mut out = BlockContents::default();
     let mut i = 0;
+    // The index of the next top-level `;` at or after `i` (or the end). It is
+    // cached so that a long run of nested rules without semicolons does not
+    // rescan the rest of the block for every rule (keeps parsing linear).
+    let mut next_semicolon: Option<usize> = None;
     while let Some(v) = values.get(i) {
         match v {
             ComponentValue::Whitespace | ComponentValue::Semicolon => i += 1,
@@ -617,13 +638,20 @@ pub(crate) fn consume_block_contents(values: &[ComponentValue]) -> BlockContents
             _ => {
                 // Find the end of a would-be declaration: the next top-level
                 // `;` or the end of the block.
-                let end = values
-                    .get(i..)
-                    .and_then(|rest| {
-                        rest.iter()
-                            .position(|v| matches!(v, ComponentValue::Semicolon))
-                    })
-                    .map_or(values.len(), |p| i + p);
+                let end = match next_semicolon {
+                    Some(e) if e >= i => e,
+                    _ => {
+                        let e = values
+                            .get(i..)
+                            .and_then(|rest| {
+                                rest.iter()
+                                    .position(|v| matches!(v, ComponentValue::Semicolon))
+                            })
+                            .map_or(values.len(), |p| i + p);
+                        next_semicolon = Some(e);
+                        e
+                    }
+                };
                 let slice = values.get(i..end).unwrap_or(&[]);
                 if let Some(decl) = consume_declaration(slice) {
                     out.declarations.push(decl);
@@ -758,6 +786,44 @@ mod tests {
             let s = serialize(&v);
             assert_eq!(parse_component_values(&s), v, "{src} -> {s}");
         }
+    }
+
+    #[test]
+    fn serialize_separates_merging_punctuation() {
+        use ComponentValue as C;
+        for v in [
+            vec![C::Delim('~'), C::Delim('=')],
+            vec![C::Delim('|'), C::Delim('=')],
+            vec![C::Delim('^'), C::Delim('=')],
+            vec![C::Delim('$'), C::Delim('=')],
+            vec![C::Delim('*'), C::Delim('=')],
+            vec![C::Delim('<'), C::Delim('!'), C::Ident("--".into())],
+            vec![C::Ident("--".into()), C::Delim('>')],
+            vec![C::Delim('-'), C::Delim('-'), C::Delim('>')],
+        ] {
+            let s = serialize(&v);
+            assert_eq!(parse_component_values(&s), v, "{s}");
+        }
+    }
+
+    #[test]
+    fn serialize_keeps_id_hash_flag() {
+        let v = parse_component_values("#\\31 23");
+        assert!(matches!(&v[0], ComponentValue::Hash { value, is_id: true } if value == "123"));
+        let s = serialize(&v);
+        assert_eq!(parse_component_values(&s), v, "{s}");
+        assert!(crate::selector::parse_selector_list(&s).is_ok());
+    }
+
+    #[test]
+    fn many_nested_rules_without_semicolons_is_linear() {
+        // 50k rules in one block: quadratic rescanning would take minutes.
+        let src = "& {} ".repeat(50_000);
+        let v = parse_component_values(&src);
+        let start = std::time::Instant::now();
+        let c = consume_block_contents(&v);
+        assert_eq!(c.rules.len(), 50_000);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]

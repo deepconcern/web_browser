@@ -422,8 +422,9 @@ pub(crate) fn parse_integer(c: &mut Cursor<'_>) -> Option<i32> {
         }
         ComponentValue::Function { .. } => {
             let v = parse_math_function(c)?.constant()?;
+            // §10.9: round to the nearest integer, ties toward +infinity.
             // `as` saturates, which is the clamping we want.
-            Some(v.round() as i32)
+            Some((v + 0.5).floor() as i32)
         }
         _ => None,
     })
@@ -431,8 +432,25 @@ pub(crate) fn parse_integer(c: &mut Cursor<'_>) -> Option<i32> {
 
 /// Parses a `<percentage>`, in percent.
 pub(crate) fn parse_percentage(c: &mut Cursor<'_>, range: Range) -> Option<f32> {
-    c.attempt(|c| match c.next()? {
-        ComponentValue::Percentage(n) if range.ok(n.value) => Some(n.value),
+    c.attempt(|c| match c.peek()? {
+        ComponentValue::Percentage(n) => {
+            c.next();
+            range.ok(n.value).then_some(n.value)
+        }
+        ComponentValue::Function { .. } => {
+            // A math function whose type is <percentage> (§10.7): evaluate it
+            // in percent and clamp to the allowed range (§10.12).
+            let node = parse_math_function(c)?;
+            if node.calc_type()? != CalcType::Percentage {
+                return None;
+            }
+            let v = node.evaluate(&|_| 0.0, 100.0);
+            Some(if range == Range::NonNegative {
+                v.max(0.0)
+            } else {
+                v
+            })
+        }
         _ => None,
     })
 }
@@ -650,6 +668,35 @@ mod tests {
             Cursor::parse_all(&v, |c| parse_number(c, Range::NonNegative)),
             None
         );
+    }
+
+    #[test]
+    fn integer_rounding_ties_toward_positive_infinity() {
+        for (src, want) in [
+            ("calc(-1.5)", -1),
+            ("calc(1.5)", 2),
+            ("calc(-2.5)", -2),
+            ("calc(-1.6)", -2),
+            ("calc(-1.4)", -1),
+        ] {
+            let v = parse_component_values(src);
+            assert_eq!(Cursor::parse_all(&v, parse_integer), Some(want), "{src}");
+        }
+    }
+
+    #[test]
+    fn percentage_math_functions() {
+        let pct = |s: &str, r| {
+            let v = parse_component_values(s);
+            Cursor::parse_all(&v, |c| parse_percentage(c, r))
+        };
+        assert_eq!(pct("calc(50%)", Range::All), Some(50.0));
+        assert_eq!(pct("calc(100% + 20%)", Range::All), Some(120.0));
+        assert_eq!(pct("calc(50% * 2)", Range::All), Some(100.0));
+        assert_eq!(pct("calc(-10%)", Range::NonNegative), Some(0.0));
+        assert_eq!(pct("calc(10px)", Range::All), None);
+        assert_eq!(pct("calc(10% + 1px)", Range::All), None);
+        assert_eq!(pct("-1%", Range::NonNegative), None);
     }
 
     #[test]

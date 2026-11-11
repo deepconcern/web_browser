@@ -525,6 +525,40 @@ mod tests {
     }
 
     #[test]
+    fn invalid_custom_property_values_are_dropped() {
+        let d = parse_style_attribute(
+            "--c: red; --c: url(bad url); --d: a ! b; --e: x); --f: var(x); --g: 1 !important",
+        );
+        let names: Vec<_> = d
+            .declarations
+            .iter()
+            .map(|d| match &d.kind {
+                DeclarationKind::Custom { name, .. } => name.as_str(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["--c", "--g"]);
+        let d = parse_style_attribute("--h: { a; b ! c }");
+        assert_eq!(d.declarations.len(), 1);
+    }
+
+    #[test]
+    fn invalid_var_syntax_drops_declaration() {
+        let d = parse_style_attribute(
+            "width: 10px; width: var(x); width: var(--a, var(y)); color: var(--c, x)",
+        );
+        assert_eq!(d.declarations.len(), 2, "{:?}", d.declarations);
+        assert!(matches!(
+            d.declarations[0].kind,
+            DeclarationKind::Longhand(_)
+        ));
+        assert!(matches!(
+            d.declarations[1].kind,
+            DeclarationKind::WithVariables { .. }
+        ));
+    }
+
+    #[test]
     fn charset() {
         assert_eq!(
             charset_from_bytes(b"@charset \"iso-8859-1\"; a{}"),

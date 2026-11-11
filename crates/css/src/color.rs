@@ -400,8 +400,9 @@ fn parse_hwb(args: &[ComponentValue]) -> Option<Rgba> {
         |c, _| parse_channel(c, true),
     )?;
     let h = h.resolve(1.0);
-    let w = w.resolve(100.0) / 100.0;
-    let bl = b.resolve(100.0) / 100.0;
+    // §8: whiteness and blackness are clamped to [0%, 100%] first.
+    let w = (w.resolve(100.0) / 100.0).clamp(0.0, 1.0);
+    let bl = (b.resolve(100.0) / 100.0).clamp(0.0, 1.0);
     let sum = w + bl;
     if sum >= 1.0 {
         let gray = w / sum;
@@ -792,6 +793,17 @@ mod tests {
         assert_eq!(rgba("hsl(120, 100, 50)"), None);
         assert_eq!(rgba("hwb(0 0% 0%)"), Some(Rgba::rgb(255, 0, 0)));
         assert_eq!(rgba("hwb(0 60% 60%)"), Some(Rgba::rgb(128, 128, 128)));
+    }
+
+    #[test]
+    fn hwb_clamps_whiteness_and_blackness() {
+        assert_eq!(rgba("hwb(30 -50% 50%)"), Some(Rgba::rgb(128, 64, 0)));
+        assert_eq!(rgba("hwb(0 0% 150%)"), Some(Rgba::rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn percentage_calc_in_colors() {
+        assert_eq!(rgba("rgb(calc(100%) 0% 0%)"), Some(Rgba::rgb(255, 0, 0)));
     }
 
     #[test]

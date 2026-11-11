@@ -515,6 +515,12 @@ fn calc_in_properties() {
     assert_eq!(one("z-index", "calc(2 * 3)"), L::ZIndex(ZIndex::Integer(6)));
     assert_eq!(one("opacity", "calc(1 / 2)"), L::Opacity(0.5));
     invalid("width", "calc(10)");
+    assert_eq!(one("opacity", "calc(50%)"), L::Opacity(0.5));
+    assert_eq!(
+        one("font-stretch", "calc(100% + 20%)"),
+        L::FontStretch(120.0)
+    );
+    assert_eq!(one("z-index", "calc(-1.5)"), L::ZIndex(ZIndex::Integer(-1)));
 }
 
 #[test]

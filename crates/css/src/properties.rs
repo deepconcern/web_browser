@@ -12,6 +12,7 @@ use crate::cursor::Cursor;
 use crate::syntax::{ComponentValue, RawDeclaration};
 use crate::types::*;
 use crate::values::{Image, LengthPercentage};
+use crate::variables::{is_declaration_value, var_references_valid};
 
 macro_rules! longhands {
     ($(
@@ -529,6 +530,11 @@ pub(crate) fn parse_declaration(raw: &RawDeclaration<'_>, out: &mut Vec<Declarat
     let important = raw.important;
     let mut push = |kind| out.push(Declaration { kind, important });
     if raw.name.starts_with("--") {
+        // The value must be a `<declaration-value>` with well-formed `var()`
+        // references, or the declaration is invalid (CSS Variables 1 §2, §3).
+        if !is_declaration_value(raw.value, false) || !var_references_valid(raw.value) {
+            return;
+        }
         let value = match css_wide(raw.value) {
             Some(k) => CustomValue::CssWide(k),
             None => CustomValue::Tokens(raw.value.to_vec()),
@@ -556,6 +562,10 @@ pub(crate) fn parse_declaration(raw: &RawDeclaration<'_>, out: &mut Vec<Declarat
         return;
     }
     if contains_var(raw.value) {
+        // Malformed `var()` syntax invalidates the declaration at parse time.
+        if !is_declaration_value(raw.value, false) || !var_references_valid(raw.value) {
+            return;
+        }
         push(DeclarationKind::WithVariables {
             property,
             value: raw.value.to_vec(),
