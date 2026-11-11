@@ -198,15 +198,21 @@ impl Client {
 
     /// A client with the given configuration.
     pub fn with_config(config: ClientConfig) -> Result<Client, NetError> {
+        // Everything fallible happens before the runtime exists: dropping a
+        // bare runtime from inside an async context panics.
+        let tls = tls_config(&config.extra_root_certificates, config.http2)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(config.worker_threads.max(1))
+            // Content decoding runs on the blocking pool; keep it small.
+            .max_blocking_threads(4)
             .thread_name("wb-net")
             .enable_io()
             .enable_time()
             .build()
             .map_err(|e| NetError::ClientUnavailable(e.to_string()))?;
+        // From here on nothing can fail; the runtime ends up in a
+        // `RuntimeHolder`, whose drop never blocks.
         let counters = Arc::new(Counters::default());
-        let tls = tls_config(&config.extra_root_certificates, config.http2)?;
         let connector = Connector::new(tls, config.connect_timeout, counters.clone());
         let http = {
             let _guard = runtime.enter();

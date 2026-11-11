@@ -90,8 +90,9 @@ impl Cookie {
 }
 
 /// Persistent backing for a [`CookieJar`]. The jar keeps its own in-memory
-/// copy and calls the store on every change; `load` runs once, when the jar
-/// is created. Implementations decide whether to keep session cookies
+/// copy and calls the store on every change, in the order the changes
+/// happen (the jar's lock is held during the call, so a store must not call
+/// back into the jar); `load` runs once, when the jar is created. Implementations decide whether to keep session cookies
 /// (`expires == None`); they should not survive a browser restart.
 pub trait CookieStore: Send + Sync {
     /// Returns every stored cookie.
@@ -352,30 +353,29 @@ impl CookieJar {
 
     /// Removes every cookie.
     pub fn clear(&self) {
-        let removed = std::mem::take(&mut *self.lock());
-        if let Some(store) = &self.store {
-            for c in &removed {
-                store.delete(c);
-            }
-        }
+        let mut jar = self.lock();
+        let removed = std::mem::take(&mut *jar);
+        let changes: Vec<(Cookie, bool)> = removed.into_iter().map(|c| (c, false)).collect();
+        // Persist while still holding the lock, so the store sees changes in
+        // the same order as the jar.
+        self.persist(&changes);
+        drop(jar);
     }
 
     /// Removes every cookie partitioned under the top-level site `site`.
     pub fn clear_partition(&self, site: &Site) {
         let key = site.to_string();
-        let mut removed = Vec::new();
-        self.lock().retain(|c| {
+        let mut changes = Vec::new();
+        let mut jar = self.lock();
+        jar.retain(|c| {
             let keep = c.partition != key;
             if !keep {
-                removed.push(c.clone());
+                changes.push((c.clone(), false));
             }
             keep
         });
-        if let Some(store) = &self.store {
-            for c in &removed {
-                store.delete(c);
-            }
-        }
+        self.persist(&changes);
+        drop(jar);
     }
 
     /// The `document.cookie` getter for a document at `document_url` inside
@@ -453,8 +453,8 @@ impl CookieJar {
                 changed.push((c.clone(), true));
             }
         }
-        drop(jar);
         self.persist(&changed);
+        drop(jar);
         if parts.is_empty() {
             None
         } else {
@@ -599,14 +599,14 @@ impl CookieJar {
             jar.push(cookie.clone());
             evict(&mut jar, &cookie, now, &mut changes);
         }
-        drop(jar);
         // Only persistent cookies go to the store; session cookies die with
-        // the process.
+        // the process. Persist before releasing the lock (see `clear`).
         let changes: Vec<(Cookie, bool)> = changes
             .into_iter()
             .filter(|(c, keep)| !*keep || c.expires.is_some())
             .collect();
         self.persist(&changes);
+        drop(jar);
         stored
     }
 }
@@ -1015,5 +1015,68 @@ mod tests {
             ]
         );
         assert!(format!("{jar:?}").contains("persistent: true"));
+    }
+
+    /// A store that replays operations into a map, slowly, to expose
+    /// out-of-order persistence.
+    #[derive(Default)]
+    struct Replay(Mutex<std::collections::HashMap<(String, String, String, String), Cookie>>);
+    impl CookieStore for Replay {
+        fn load(&self) -> Vec<Cookie> {
+            Vec::new()
+        }
+        fn save(&self, c: &Cookie) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            let k = (
+                c.partition.clone(),
+                c.name.clone(),
+                c.domain.clone(),
+                c.path.clone(),
+            );
+            self.0.lock().unwrap().insert(k, c.clone());
+        }
+        fn delete(&self, c: &Cookie) {
+            let k = (
+                c.partition.clone(),
+                c.name.clone(),
+                c.domain.clone(),
+                c.path.clone(),
+            );
+            self.0.lock().unwrap().remove(&k);
+        }
+    }
+
+    #[test]
+    fn persistence_follows_mutation_order() {
+        let store = Arc::new(Replay::default());
+        let jar = CookieJar::with_store(store.clone());
+        let url = u("https://a.example/");
+        let c = ctx("https://a.example/");
+        for i in 0..40 {
+            let setter = {
+                let jar = jar.clone();
+                let url = url.clone();
+                let c = c.clone();
+                std::thread::spawn(move || {
+                    jar.set_cookie(&url, "p=1; Max-Age=1000", &c, now());
+                })
+            };
+            // Clear as soon as the cookie is in the jar: with persistence
+            // outside the lock, the setter's save would land after this
+            // clear's delete and resurrect the cookie in the store.
+            while jar.is_empty() {
+                std::thread::yield_now();
+            }
+            if i % 2 == 0 {
+                jar.clear();
+            } else {
+                jar.clear_partition(&url.site());
+            }
+            setter.join().unwrap();
+            let persisted = store.0.lock().unwrap().len();
+            let in_jar = jar.all().iter().filter(|c| c.expires.is_some()).count();
+            assert_eq!(persisted, in_jar, "iteration {i}: store and jar disagree");
+            jar.clear();
+        }
     }
 }

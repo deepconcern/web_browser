@@ -544,3 +544,164 @@ fn unsupported_schemes_and_bad_requests() {
     ));
     assert_eq!(client.stats(), NetStats::default());
 }
+
+#[test]
+fn bad_verifier_config_inside_async_context_does_not_panic() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let r = rt.block_on(async {
+        Client::with_config(ClientConfig {
+            extra_root_certificates: vec![b"not a certificate".to_vec()],
+            ..ClientConfig::default()
+        })
+    });
+    assert!(matches!(r, Err(NetError::Tls(_))), "{r:?}");
+}
+
+#[test]
+fn data_urls_respect_the_body_limit() {
+    let client = Client::with_config(ClientConfig {
+        max_body_bytes: 8,
+        ..config()
+    })
+    .unwrap();
+    assert_eq!(
+        client
+            .fetch(Request::navigate(u("data:,123456789")))
+            .unwrap_err(),
+        NetError::BodyTooLarge { limit: 8 }
+    );
+    assert_eq!(
+        client
+            .fetch(Request::navigate(u("data:,12345678")))
+            .unwrap()
+            .body,
+        b"12345678"
+    );
+}
+
+#[test]
+fn followed_redirect_bodies_are_not_read() {
+    let server = start(true, |s| match s.path.as_str() {
+        "/corrupt" => reply(
+            302,
+            &[
+                ("location", "/ok"),
+                ("content-encoding", "gzip"),
+                ("set-cookie", "r=1; Path=/"),
+            ],
+            b"this is not gzip",
+        ),
+        "/huge" => reply(301, &[("location", "/ok")], &vec![b'x'; 100_000]),
+        _ => reply(200, &[], b"landed"),
+    });
+    let client = Client::with_config(ClientConfig {
+        max_body_bytes: 1000,
+        ..config()
+    })
+    .unwrap();
+    let base = format!("https://127.0.0.1:{}", server.port());
+    let r = client
+        .fetch(Request::navigate(u(&format!("{base}/corrupt"))))
+        .unwrap();
+    assert_eq!(r.body, b"landed");
+    assert_eq!(
+        client.cookies().len(),
+        1,
+        "Set-Cookie on the redirect still applies"
+    );
+    let r = client
+        .fetch(Request::navigate(u(&format!("{base}/huge"))))
+        .unwrap();
+    assert_eq!(r.body, b"landed");
+    // In Manual mode the redirect body is the response, so it is read.
+    let mut manual = Request::navigate(u(&format!("{base}/huge")));
+    manual.redirect_mode = RedirectMode::Manual;
+    assert_eq!(
+        client.fetch(manual).unwrap_err(),
+        NetError::BodyTooLarge { limit: 1000 }
+    );
+}
+
+#[test]
+fn redirect_cannot_restore_a_removed_referrer() {
+    let server = start(false, |s| match s.path.as_str() {
+        "/hop" => reply(
+            302,
+            &[("location", "/end"), ("referrer-policy", "unsafe-url")],
+            b"",
+        ),
+        "/trim" => reply(
+            302,
+            &[("location", "/end2"), ("referrer-policy", "unsafe-url")],
+            b"",
+        ),
+        _ => reply(200, &[], b""),
+    });
+    let p = server.port();
+    let client = insecure_client(config());
+    let top = u(&format!("http://127.0.0.1:{p}/secret/page?q=1"));
+    let mut req = Request::subresource(u(&format!("http://127.0.0.1:{p}/hop")), &top);
+    req.referrer_policy = wb_net::ReferrerPolicy::NoReferrer;
+    client.fetch(req).unwrap();
+    let mut req = Request::subresource(u(&format!("http://127.0.0.1:{p}/trim")), &top);
+    req.referrer_policy = wb_net::ReferrerPolicy::Origin;
+    client.fetch(req).unwrap();
+    let reqs = server.requests();
+    let referer = |path: &str| {
+        reqs.iter()
+            .find(|r| r.path == path)
+            .and_then(|r| r.header("referer").map(str::to_owned))
+    };
+    assert_eq!(referer("/hop"), None);
+    assert_eq!(
+        referer("/end"),
+        None,
+        "unsafe-url on the redirect cannot bring it back"
+    );
+    assert_eq!(referer("/trim"), Some(format!("http://127.0.0.1:{p}/")));
+    assert_eq!(referer("/end2"), Some(format!("http://127.0.0.1:{p}/")));
+}
+
+#[test]
+fn preconditioned_and_authorized_requests_skip_the_cache() {
+    let server = start(true, |s| {
+        if s.header("if-none-match").is_some() {
+            reply(304, &[], b"")
+        } else if s.header("authorization").is_some() {
+            reply(200, &[], b"private")
+        } else {
+            reply(
+                200,
+                &[("cache-control", "max-age=600"), ("etag", "\"v\"")],
+                b"public",
+            )
+        }
+    });
+    let client = Client::with_config(config()).unwrap();
+    let url = u(&format!("https://127.0.0.1:{}/doc", server.port()));
+    client.fetch(Request::navigate(url.clone())).unwrap();
+    assert!(
+        client
+            .fetch(Request::navigate(url.clone()))
+            .unwrap()
+            .from_cache
+    );
+
+    let mut cond = Request::navigate(url.clone());
+    cond.headers.append("if-none-match", "\"v\"");
+    let r = client.fetch(cond).unwrap();
+    assert_eq!(
+        r.status, 304,
+        "the caller's precondition goes to the server"
+    );
+    assert!(!r.from_cache);
+
+    let mut auth = Request::navigate(url);
+    auth.headers.append("authorization", "Bearer t");
+    let r = client.fetch(auth).unwrap();
+    assert_eq!(r.body, b"private");
+    assert!(!r.from_cache);
+    assert_eq!(server.requests().len(), 3);
+}

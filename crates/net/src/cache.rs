@@ -124,6 +124,9 @@ struct Entry {
     request_time: i64,
     response_time: i64,
     last_used: u64,
+    /// Identity of this stored response; a revalidation only merges into
+    /// the entry it started from.
+    generation: u64,
 }
 
 impl Entry {
@@ -186,9 +189,67 @@ pub(crate) enum Lookup {
     Miss,
     /// A response that may be used as is.
     Fresh(CachedResponse),
-    /// A stored response that must be revalidated first, with the
-    /// conditional headers to send.
-    Revalidate(Vec<(&'static str, String)>),
+    /// A stored response that must be revalidated first.
+    Revalidate(Revalidation),
+}
+
+/// A revalidation in progress: the stored response it started from and the
+/// conditional headers to send.
+#[derive(Clone, Debug)]
+pub(crate) struct Revalidation {
+    pub(crate) conditional: Vec<(&'static str, String)>,
+    generation: u64,
+    response: CachedResponse,
+}
+
+/// Request headers that make a request conditional. Fetch (HTTP-network-or-
+/// cache fetch, step 8.22) switches such requests to cache mode "no-store":
+/// the caller is asking the server, not us.
+pub(crate) fn has_preconditions(headers: &Headers) -> bool {
+    [
+        "if-modified-since",
+        "if-none-match",
+        "if-unmodified-since",
+        "if-match",
+        "if-range",
+    ]
+    .iter()
+    .any(|h| headers.contains(h))
+}
+
+/// Framing headers of a 304 that must not overwrite the stored ones.
+fn is_framing_header(name: &str) -> bool {
+    matches!(
+        name,
+        "content-length" | "content-encoding" | "transfer-encoding"
+    )
+}
+
+/// Merges a 304's headers into stored ones (RFC 9111 §3.2): each header the
+/// 304 carries replaces the stored header of that name.
+fn merge_headers(stored: &Headers, not_modified: &Headers) -> Headers {
+    let mut updated = stored.clone();
+    for (name, _) in not_modified.iter() {
+        if !is_framing_header(name) {
+            updated.remove(name);
+        }
+    }
+    for (name, value) in not_modified.iter() {
+        if !is_framing_header(name) {
+            updated.append(name, value);
+        }
+    }
+    updated
+}
+
+fn vary_selectors(names: Vec<String>, request_headers: &Headers) -> Vec<(String, Option<String>)> {
+    names
+        .into_iter()
+        .map(|n| {
+            let v = normalize(request_headers.get_combined(&n));
+            (n, v)
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -248,7 +309,13 @@ impl MemoryCache {
             return Lookup::Miss;
         }
         let request_cc = CacheControl::parse(request_headers);
-        if request_cc.has("no-store") {
+        // A stored response may have been fetched without credentials, so
+        // an authenticated request never reads from the cache; neither does
+        // a request with its own preconditions.
+        if request_cc.has("no-store")
+            || request_headers.contains("authorization")
+            || has_preconditions(request_headers)
+        {
             return Lookup::Miss;
         }
         let mut inner = self.lock();
@@ -310,7 +377,11 @@ impl MemoryCache {
         if conditional.is_empty() {
             Lookup::Miss
         } else {
-            Lookup::Revalidate(conditional)
+            Lookup::Revalidate(Revalidation {
+                conditional,
+                generation: entry.generation,
+                response: entry.response.clone(),
+            })
         }
     }
 
@@ -334,6 +405,7 @@ impl MemoryCache {
         if request_cc.has("no-store")
             || response_cc.has("no-store")
             || request_headers.contains("authorization")
+            || has_preconditions(request_headers)
             || matches!(response.status, 206 | 304)
             || response.status < 200
         {
@@ -342,19 +414,14 @@ impl MemoryCache {
         let Some(names) = vary_names(&response.headers) else {
             return;
         };
-        let vary = names
-            .into_iter()
-            .map(|n| {
-                let v = normalize(request_headers.get_combined(&n));
-                (n, v)
-            })
-            .collect();
+        let vary = vary_selectors(names, request_headers);
         let entry = Entry {
             response,
             vary,
             request_time,
             response_time,
             last_used: 0,
+            generation: 0,
         };
         let explicit = response_cc.has("max-age")
             || entry.response.headers.contains("expires")
@@ -370,6 +437,7 @@ impl MemoryCache {
         inner.tick += 1;
         let mut entry = entry;
         entry.last_used = inner.tick;
+        entry.generation = inner.tick;
         let size = entry.size();
         if let Some(old) = inner
             .entries
@@ -391,46 +459,50 @@ impl MemoryCache {
         }
     }
 
-    /// Freshens a stored response with a 304 (§4.3.4) and returns it.
+    /// Completes a revalidation that got a 304 (§4.3.4). Always returns
+    /// the revalidated response (the stored one with the 304's headers
+    /// merged in). The cache is updated only if the entry the revalidation
+    /// started from is still there: a different variant stored meanwhile is
+    /// left alone. If the merged headers forbid storing (`no-store`,
+    /// `Vary: *`), the entry is removed.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn freshen(
         &self,
         partition: &str,
         url: &str,
+        revalidation: &Revalidation,
+        request_headers: &Headers,
         not_modified: &Headers,
         request_time: i64,
         response_time: i64,
-    ) -> Option<CachedResponse> {
+    ) -> CachedResponse {
+        let mut response = revalidation.response.clone();
+        response.headers = merge_headers(&response.headers, not_modified);
         let mut inner = self.lock();
         let key = (partition.to_owned(), url.to_owned());
-        let entry = inner.entries.get_mut(&key)?;
+        let Some(entry) = inner.entries.get_mut(&key) else {
+            return response;
+        };
+        if entry.generation != revalidation.generation {
+            return response;
+        }
         let old_size = entry.size();
-        // Replace each stored header that the 304 carries (§3.2), except
-        // the framing headers that describe the 304 itself.
-        let mut updated = entry.response.headers.clone();
-        for (name, _) in not_modified.iter() {
-            if matches!(
-                name,
-                "content-length" | "content-encoding" | "transfer-encoding"
-            ) {
-                continue;
+        let forbidden = CacheControl::parse(&response.headers).has("no-store");
+        match vary_names(&response.headers) {
+            Some(names) if !forbidden => {
+                entry.vary = vary_selectors(names, request_headers);
+                entry.response.headers = response.headers.clone();
+                entry.request_time = request_time;
+                entry.response_time = response_time;
+                let new_size = entry.size();
+                inner.total = inner.total.saturating_sub(old_size) + new_size;
             }
-            updated.remove(name);
-        }
-        for (name, value) in not_modified.iter() {
-            if !matches!(
-                name,
-                "content-length" | "content-encoding" | "transfer-encoding"
-            ) {
-                updated.append(name, value);
+            _ => {
+                inner.entries.remove(&key);
+                inner.total = inner.total.saturating_sub(old_size);
             }
         }
-        entry.response.headers = updated;
-        entry.request_time = request_time;
-        entry.response_time = response_time;
-        let response = entry.response.clone();
-        let new_size = entry.size();
-        inner.total = inner.total.saturating_sub(old_size) + new_size;
-        Some(response)
+        response
     }
 
     /// Removes a stored response (§4.4 invalidation).
@@ -568,7 +640,7 @@ mod tests {
         );
         assert!(matches!(look(&c, T + 99), Lookup::Fresh(_)));
         assert!(
-            matches!(look(&c, T + 101), Lookup::Revalidate(h) if h[0].0 == "if-modified-since")
+            matches!(look(&c, T + 101), Lookup::Revalidate(r) if r.conditional[0].0 == "if-modified-since")
         );
     }
 
@@ -625,19 +697,149 @@ mod tests {
                 b"body",
             ),
         );
-        match look(&c, T) {
-            Lookup::Revalidate(h) => assert_eq!(h, vec![("if-none-match", "\"v1\"".to_owned())]),
-            other => panic!("{other:?}"),
-        }
-        let mut nm = Headers::new();
-        nm.append("etag", "\"v1\"");
-        nm.append("cache-control", "max-age=60");
-        nm.append("content-length", "0");
-        let r = c.freshen(P, URL, &nm, T + 1, T + 1).unwrap();
+        let rv = revalidation(&c, Headers::new());
+        assert_eq!(rv.conditional, vec![("if-none-match", "\"v1\"".to_owned())]);
+        let nm = headers(&[
+            ("etag", "\"v1\""),
+            ("cache-control", "max-age=60"),
+            ("content-length", "0"),
+        ]);
+        let r = c.freshen(P, URL, &rv, &Headers::new(), &nm, T + 1, T + 1);
         assert_eq!(*r.body, b"body");
         assert_eq!(r.headers.get("cache-control"), Some("max-age=60"));
         assert!(!r.headers.contains("content-length"));
         assert!(matches!(look(&c, T + 10), Lookup::Fresh(_)));
+    }
+
+    fn headers(list: &[(&str, &str)]) -> Headers {
+        let mut h = Headers::new();
+        for (n, v) in list {
+            h.append(n, v);
+        }
+        h
+    }
+
+    fn revalidation(c: &MemoryCache, req: Headers) -> Revalidation {
+        match c.lookup(P, URL, &req, CacheMode::Default, T) {
+            Lookup::Revalidate(r) => r,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn etag_entry(c: &MemoryCache, req: &Headers, vary: &str, body: &[u8]) {
+        c.store(
+            P,
+            URL,
+            req,
+            resp(
+                200,
+                &[("cache-control", "no-cache"), ("etag", "e"), ("vary", vary)],
+                body,
+            ),
+            CacheMode::Default,
+            T,
+            T,
+        );
+    }
+
+    #[test]
+    fn authorization_bypasses_lookup() {
+        let c = MemoryCache::new(1 << 20, 1 << 20);
+        store(&c, resp(200, &[("cache-control", "max-age=100")], b"anon"));
+        let auth = headers(&[("authorization", "Bearer x")]);
+        assert!(matches!(
+            c.lookup(P, URL, &auth, CacheMode::Default, T),
+            Lookup::Miss
+        ));
+        assert!(matches!(
+            c.lookup(P, URL, &auth, CacheMode::ForceCache, T),
+            Lookup::Miss
+        ));
+    }
+
+    #[test]
+    fn preconditions_bypass_cache() {
+        let c = MemoryCache::new(1 << 20, 1 << 20);
+        store(&c, resp(200, &[("cache-control", "max-age=100")], b"x"));
+        for name in [
+            "if-none-match",
+            "if-match",
+            "if-modified-since",
+            "if-unmodified-since",
+            "if-range",
+        ] {
+            let h = headers(&[(name, "\"v\"")]);
+            assert!(
+                matches!(c.lookup(P, URL, &h, CacheMode::Default, T), Lookup::Miss),
+                "{name}"
+            );
+        }
+        c.clear();
+        let h = headers(&[("if-match", "\"v\"")]);
+        c.store(
+            P,
+            URL,
+            &h,
+            resp(200, &[("cache-control", "max-age=100")], b""),
+            CacheMode::Default,
+            T,
+            T,
+        );
+        assert_eq!(c.len(), 0);
+    }
+
+    #[test]
+    fn freshen_only_merges_into_the_revalidated_entry() {
+        let c = MemoryCache::new(1 << 20, 1 << 20);
+        let en = headers(&[("accept-language", "en")]);
+        let fr = headers(&[("accept-language", "fr")]);
+        etag_entry(&c, &en, "accept-language", b"english");
+        let rv = revalidation(&c, en.clone());
+        // Meanwhile another variant replaces the entry.
+        etag_entry(&c, &fr, "accept-language", b"french");
+        let nm = headers(&[("etag", "e"), ("cache-control", "max-age=60")]);
+        let r = c.freshen(P, URL, &rv, &en, &nm, T, T);
+        assert_eq!(
+            *r.body, b"english",
+            "caller gets the variant it revalidated"
+        );
+        // The French entry is untouched: still no-cache, still French.
+        match c.lookup(P, URL, &fr, CacheMode::Default, T) {
+            Lookup::Revalidate(r) => assert_eq!(*r.response.body, b"french"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn freshen_rebuilds_vary_selectors() {
+        let c = MemoryCache::new(1 << 20, 1 << 20);
+        let req = headers(&[("accept-language", "en"), ("accept", "text/html")]);
+        etag_entry(&c, &req, "accept-language", b"x");
+        let rv = revalidation(&c, req.clone());
+        let nm = headers(&[("cache-control", "max-age=60"), ("vary", "accept")]);
+        c.freshen(P, URL, &rv, &req, &nm, T, T);
+        let other_accept = headers(&[("accept-language", "en"), ("accept", "image/png")]);
+        assert!(matches!(
+            c.lookup(P, URL, &other_accept, CacheMode::Default, T),
+            Lookup::Miss
+        ));
+        assert!(matches!(
+            c.lookup(P, URL, &req, CacheMode::Default, T),
+            Lookup::Fresh(_)
+        ));
+    }
+
+    #[test]
+    fn freshen_drops_entry_on_vary_star_or_no_store() {
+        for extra in [("vary", "*"), ("cache-control", "no-store")] {
+            let c = MemoryCache::new(1 << 20, 1 << 20);
+            etag_entry(&c, &Headers::new(), "", b"body");
+            let rv = revalidation(&c, Headers::new());
+            let nm = headers(&[extra]);
+            let r = c.freshen(P, URL, &rv, &Headers::new(), &nm, T, T);
+            assert_eq!(*r.body, b"body", "{extra:?}: response still returned");
+            assert_eq!(c.len(), 0, "{extra:?}: entry removed");
+        }
     }
 
     #[test]

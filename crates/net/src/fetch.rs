@@ -6,25 +6,25 @@
 //! minus CORS and service workers (M1 follow-ups).
 
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, LengthLimitError, Limited};
 use wb_url::{Host, Site, Url};
 
-use crate::cache::{CachedResponse, Lookup, MemoryCache};
+use crate::cache::{CachedResponse, Lookup, MemoryCache, has_preconditions};
 use crate::cookies::{CookieContext, CookieJar};
 use crate::data_url;
 use crate::date::now;
-use crate::decode::{ACCEPT_ENCODING, decode};
+use crate::decode::{ACCEPT_ENCODING, CancelOnDrop, Interrupt, decode_with};
 use crate::error::{NetError, UpgradeFailure};
 use crate::policy::PolicyGate;
 use crate::referrer::{ReferrerPolicy, determine};
 use crate::transport::{Counters, Http, map_client_error, to_uri};
 use crate::types::{
-    Headers, HttpVersion, Method, RedirectMode, Request, RequestContext, Response,
+    CacheMode, Headers, HttpVersion, Method, RedirectMode, Request, RequestContext, Response,
     isomorphic_decode, isomorphic_encode,
 };
 
@@ -105,13 +105,27 @@ struct Hop {
 /// Runs a whole fetch under the request time limit.
 pub(crate) async fn fetch(shared: Arc<Shared>, request: Request) -> Result<Response, NetError> {
     let limit = shared.request_timeout;
-    match tokio::time::timeout(limit, fetch_inner(&shared, request)).await {
+    let start = Instant::now();
+    let interrupt = Interrupt {
+        deadline: start
+            .checked_add(limit)
+            .or_else(|| start.checked_add(Duration::from_secs(1 << 30)))
+            .unwrap_or(start),
+        cancel: Arc::new(AtomicBool::new(false)),
+    };
+    // Stops a blocking decode when this future is dropped (cancel, timeout).
+    let _cancel_on_drop = CancelOnDrop(interrupt.cancel.clone());
+    match tokio::time::timeout(limit, fetch_inner(&shared, request, &interrupt)).await {
         Ok(r) => r,
         Err(_) => Err(NetError::Timeout),
     }
 }
 
-async fn fetch_inner(shared: &Shared, mut req: Request) -> Result<Response, NetError> {
+async fn fetch_inner(
+    shared: &Shared,
+    mut req: Request,
+    interrupt: &Interrupt,
+) -> Result<Response, NetError> {
     if matches!(req.method, Method::Get | Method::Head) && !req.body.is_empty() {
         return Err(NetError::InvalidRequest(
             "GET and HEAD requests cannot have a body".into(),
@@ -127,7 +141,7 @@ async fn fetch_inner(shared: &Shared, mut req: Request) -> Result<Response, NetE
         match current.scheme() {
             "data" => {
                 url_list.push(current.clone());
-                let d = data_url::process(&current).ok_or(NetError::InvalidDataUrl)?;
+                let d = data_url::process(&current, shared.max_body_bytes)?;
                 let mut headers = Headers::new();
                 headers.append("content-type", &d.mime_type);
                 return Ok(Response {
@@ -167,7 +181,15 @@ async fn fetch_inner(shared: &Shared, mut req: Request) -> Result<Response, NetE
             current.clone()
         };
         url_list.push(target.clone());
-        let hop = match http_fetch(shared, &req, &target, &url_list, policy).await {
+        // Main fetch: determine this hop's referrer and keep the result, so
+        // a later hop can only trim it further, never restore what an
+        // earlier policy removed.
+        req.referrer = if matches!(req.context, RequestContext::Background(_)) {
+            None
+        } else {
+            determine(req.referrer.as_ref(), policy, &target)
+        };
+        let hop = match http_fetch(shared, &req, &target, &url_list, interrupt).await {
             Ok(h) => h,
             Err(e)
                 if upgraded
@@ -269,7 +291,10 @@ fn cookie_context(req: &Request, url: &Url, url_list: &[Url]) -> Option<(CookieC
                 // Third-party cookies are blocked outright.
                 return None;
             }
-            (top_level_site.clone(), true, false)
+            // A cross-site hop anywhere in the redirect chain makes the
+            // request cross-site for SameSite purposes.
+            let same = url_list.iter().all(|u| u.site().same_site(top_level_site));
+            (top_level_site.clone(), same, false)
         }
         RequestContext::Navigation { initiator } => {
             let first = url_list.first().map(Url::site);
@@ -293,12 +318,35 @@ fn cookie_context(req: &Request, url: &Url, url_list: &[Url]) -> Option<(CookieC
     ))
 }
 
-/// The cache partition for a request.
-fn cache_partition(req: &Request, url: &Url) -> String {
-    match &req.context {
-        RequestContext::Navigation { .. } => url.site().to_string(),
-        RequestContext::Subresource { top_level_site } => top_level_site.to_string(),
-        RequestContext::Background(kind) => format!("background:{kind:?}"),
+/// The cache partition for a request, or `None` to bypass the cache. Every
+/// opaque site serializes as `null`, so a key built from it would be shared
+/// by unrelated documents; opaque top-level sites don't use the cache.
+fn cache_partition(req: &Request, url: &Url) -> Option<String> {
+    let site = match &req.context {
+        RequestContext::Navigation { .. } => url.site(),
+        RequestContext::Subresource { top_level_site } => top_level_site.clone(),
+        RequestContext::Background(kind) => return Some(format!("background:{kind:?}")),
+    };
+    (!site.is_opaque()).then(|| site.to_string())
+}
+
+/// RFC 9111 §4.4: a successful unsafe request invalidates the target and,
+/// if same origin, the `Location` and `Content-Location` URLs.
+fn invalidate_after_unsafe(shared: &Shared, partition: Option<&str>, url: &Url, headers: &Headers) {
+    let Some(partition) = partition else {
+        return;
+    };
+    shared
+        .cache
+        .invalidate(partition, url.without_fragment().as_str());
+    for name in ["location", "content-location"] {
+        if let Some(other) = headers.get(name).and_then(|l| url.join(l).ok())
+            && other.origin().same_origin(&url.origin())
+        {
+            shared
+                .cache
+                .invalidate(partition, other.without_fragment().as_str());
+        }
     }
 }
 
@@ -308,7 +356,7 @@ async fn http_fetch(
     req: &Request,
     url: &Url,
     url_list: &[Url],
-    policy: ReferrerPolicy,
+    interrupt: &Interrupt,
 ) -> Result<Hop, NetError> {
     let cookie_ctx = cookie_context(req, url, url_list);
     let partition = cache_partition(req, url);
@@ -327,9 +375,8 @@ async fn http_fetch(
         headers.append("user-agent", &shared.user_agent);
     }
     headers.append("accept-encoding", ACCEPT_ENCODING);
-    if !matches!(req.context, RequestContext::Background(_))
-        && let Some(r) = determine(req.referrer.as_ref(), policy, url)
-    {
+    // `req.referrer` already holds this hop's determined referrer.
+    if let Some(r) = &req.referrer {
         headers.append("referer", r.as_str());
     }
     if let Some((ctx, _)) = &cookie_ctx
@@ -338,12 +385,19 @@ async fn http_fetch(
         headers.append("cookie", &c);
     }
 
+    // Fetch (HTTP-network-or-cache fetch, step 8.22): a request with its own
+    // preconditions neither reads nor writes the cache.
+    let cache_mode = if has_preconditions(&headers) {
+        CacheMode::NoStore
+    } else {
+        req.cache_mode
+    };
     let is_get = req.method == Method::Get;
-    let mut revalidating = false;
-    if is_get {
+    let mut revalidation = None;
+    if is_get && let Some(p) = &partition {
         match shared
             .cache
-            .lookup(&partition, &cache_key, &headers, req.cache_mode, now())
+            .lookup(p, &cache_key, &headers, cache_mode, now())
         {
             Lookup::Fresh(r) => {
                 return Ok(Hop {
@@ -354,15 +408,11 @@ async fn http_fetch(
                     from_cache: true,
                 });
             }
-            Lookup::Revalidate(conditional) => {
-                let caller_conditional =
-                    headers.contains("if-none-match") || headers.contains("if-modified-since");
-                if !caller_conditional {
-                    for (name, value) in conditional {
-                        headers.append(name, &value);
-                    }
-                    revalidating = true;
+            Lookup::Revalidate(rv) => {
+                for (name, value) in &rv.conditional {
+                    headers.append(name, value);
                 }
+                revalidation = Some(rv);
             }
             Lookup::Miss => {}
         }
@@ -402,6 +452,32 @@ async fn http_fetch(
     for (name, value) in response.headers() {
         response_headers.append(name.as_str(), &isomorphic_decode(value.as_bytes()));
     }
+
+    // A redirect we are going to follow (or refuse): its body is never
+    // used, so don't read it. An oversized, corrupt or endless body must not
+    // fail the fetch. Set-Cookie still applies.
+    if is_redirect_status(status)
+        && response_headers.contains("location")
+        && req.redirect_mode != RedirectMode::Manual
+    {
+        drop(response);
+        if let Some((ctx, _)) = &cookie_ctx {
+            for value in response_headers.get_all("set-cookie") {
+                shared.cookies.set_cookie(url, value, ctx, now());
+            }
+        }
+        if !req.method.is_safe() {
+            invalidate_after_unsafe(shared, partition.as_deref(), url, &response_headers);
+        }
+        return Ok(Hop {
+            status,
+            headers: response_headers,
+            body: Vec::new(),
+            version,
+            from_cache: false,
+        });
+    }
+
     let limit = shared.max_body_bytes;
     let raw = Limited::new(
         response.into_body(),
@@ -426,25 +502,32 @@ async fn http_fetch(
     }
 
     let has_body = req.method != Method::Head && !matches!(status, 204 | 304);
-    let body = if has_body {
-        match response_headers.get_combined("content-encoding") {
-            Some(ce) => decode(raw.to_vec(), &ce, limit)?,
-            None => raw.to_vec(),
+    let body = match response_headers.get_combined("content-encoding") {
+        Some(ce) if has_body => {
+            // Decompression is CPU-bound: run it on the blocking pool, where
+            // the request deadline and cancellation still stop it.
+            let raw = raw.to_vec();
+            let interrupt = interrupt.clone();
+            tokio::task::spawn_blocking(move || decode_with(raw, &ce, limit, &interrupt))
+                .await
+                .map_err(|e| NetError::Decode(e.to_string()))??
         }
-    } else {
-        Vec::new()
+        _ if has_body => raw.to_vec(),
+        _ => Vec::new(),
     };
 
     if status == 304
-        && revalidating
-        && let Some(r) = shared.cache.freshen(
-            &partition,
+        && let (Some(rv), Some(p)) = (&revalidation, &partition)
+    {
+        let r = shared.cache.freshen(
+            p,
             &cache_key,
+            rv,
+            &headers,
             &response_headers,
             request_time,
             response_time,
-        )
-    {
+        );
         return Ok(Hop {
             status: r.status,
             headers: r.headers,
@@ -455,33 +538,24 @@ async fn http_fetch(
     }
 
     if is_get {
-        shared.cache.store(
-            &partition,
-            &cache_key,
-            &headers,
-            CachedResponse {
-                status,
-                headers: response_headers.clone(),
-                body: Arc::new(body.clone()),
-                version,
-            },
-            req.cache_mode,
-            request_time,
-            response_time,
-        );
-    } else if !req.method.is_safe() && status < 400 {
-        // RFC 9111 §4.4: unsafe methods invalidate the target and, if same
-        // origin, the Location and Content-Location URLs.
-        shared.cache.invalidate(&partition, &cache_key);
-        for name in ["location", "content-location"] {
-            if let Some(other) = response_headers.get(name).and_then(|l| url.join(l).ok())
-                && other.origin().same_origin(&url.origin())
-            {
-                shared
-                    .cache
-                    .invalidate(&partition, other.without_fragment().as_str());
-            }
+        if let Some(p) = &partition {
+            shared.cache.store(
+                p,
+                &cache_key,
+                &headers,
+                CachedResponse {
+                    status,
+                    headers: response_headers.clone(),
+                    body: Arc::new(body.clone()),
+                    version,
+                },
+                cache_mode,
+                request_time,
+                response_time,
+            );
         }
+    } else if !req.method.is_safe() && status < 400 {
+        invalidate_after_unsafe(shared, partition.as_deref(), url, &response_headers);
     }
 
     Ok(Hop {
@@ -546,10 +620,44 @@ mod tests {
     fn partitions() {
         let top = u("https://a.test/");
         let r = Request::subresource(u("https://a.test/x"), &top);
-        assert_eq!(cache_partition(&r, &r.url), "https://a.test");
+        assert_eq!(
+            cache_partition(&r, &r.url).as_deref(),
+            Some("https://a.test")
+        );
         let n = Request::navigate(u("https://www.b.test/"));
-        assert_eq!(cache_partition(&n, &n.url), "https://b.test");
+        assert_eq!(
+            cache_partition(&n, &n.url).as_deref(),
+            Some("https://b.test")
+        );
         let b = Request::background(u("https://x.test/"), BackgroundKind::UpdateCheck);
-        assert_eq!(cache_partition(&b, &b.url), "background:UpdateCheck");
+        assert_eq!(
+            cache_partition(&b, &b.url).as_deref(),
+            Some("background:UpdateCheck")
+        );
+    }
+
+    #[test]
+    fn opaque_top_level_sites_bypass_the_cache() {
+        let a = Request::subresource(u("https://x.test/a"), &u("data:text/html,a"));
+        let b = Request::subresource(u("https://x.test/a"), &u("data:text/html,b"));
+        assert_eq!(cache_partition(&a, &a.url), None);
+        assert_eq!(cache_partition(&b, &b.url), None);
+    }
+
+    #[test]
+    fn subresource_redirect_chain_taints_same_site() {
+        let top = u("https://a.test/");
+        let r = Request::subresource(u("https://a.test/x"), &top);
+        let chain = [
+            u("https://a.test/x"),
+            u("https://b.test/y"),
+            u("https://a.test/z"),
+        ];
+        let (ctx, _) = cookie_context(&r, &chain[2], &chain).unwrap();
+        assert!(!ctx.same_site, "A -> B -> A is cross-site");
+        assert_eq!(ctx.partition, "https://a.test");
+        let direct = [u("https://a.test/x"), u("https://cdn.a.test/z")];
+        let (ctx, _) = cookie_context(&r, &direct[1], &direct).unwrap();
+        assert!(ctx.same_site);
     }
 }

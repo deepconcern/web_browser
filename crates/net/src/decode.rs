@@ -2,8 +2,56 @@
 //! `gzip` (and `x-gzip`), `deflate`, `br` and `identity`.
 
 use std::io::Read;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 use crate::error::NetError;
+
+/// Lets a running decode stop early: at the request deadline, or when the
+/// fetch is cancelled (its future dropped). Checked between 64 KiB chunks,
+/// so decoding runs off the async workers (`spawn_blocking`) yet still ends
+/// promptly.
+#[derive(Clone, Debug)]
+pub(crate) struct Interrupt {
+    pub(crate) deadline: Instant,
+    pub(crate) cancel: Arc<AtomicBool>,
+}
+
+impl Interrupt {
+    /// An interrupt that never fires (for tests and in-memory decodes).
+    #[cfg(test)]
+    pub(crate) fn never() -> Interrupt {
+        Interrupt {
+            deadline: Instant::now() + Duration::from_secs(3600),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn check(&self) -> Result<(), NetError> {
+        if self.cancel.load(Ordering::Relaxed) {
+            Err(NetError::Cancelled)
+        } else if Instant::now() >= self.deadline {
+            Err(NetError::Timeout)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Sets the flag when dropped; tie it to the fetch future's lifetime.
+#[derive(Debug)]
+pub(crate) struct CancelOnDrop(pub(crate) Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+const CHUNK: usize = 64 * 1024;
 
 /// The value sent in `Accept-Encoding`.
 pub(crate) const ACCEPT_ENCODING: &str = "gzip, deflate, br";
@@ -12,10 +60,21 @@ pub(crate) const ACCEPT_ENCODING: &str = "gzip, deflate, br";
 /// applied in order, so decoded in reverse). Unknown codings leave the body
 /// as it is, which is what browsers do. The decoded size is capped at
 /// `limit` bytes to defuse decompression bombs.
+#[cfg(test)]
 pub(crate) fn decode(
     body: Vec<u8>,
     content_encoding: &str,
     limit: u64,
+) -> Result<Vec<u8>, NetError> {
+    decode_with(body, content_encoding, limit, &Interrupt::never())
+}
+
+/// [`decode`] with an [`Interrupt`].
+pub(crate) fn decode_with(
+    body: Vec<u8>,
+    content_encoding: &str,
+    limit: u64,
+    interrupt: &Interrupt,
 ) -> Result<Vec<u8>, NetError> {
     let codings: Vec<String> = content_encoding
         .split(',')
@@ -29,12 +88,14 @@ pub(crate) fn decode(
                 flate2::read::MultiGzDecoder::new(body.as_slice()),
                 limit,
                 "gzip",
+                interrupt,
             )?,
-            "deflate" => inflate(&body, limit)?,
+            "deflate" => inflate(&body, limit, interrupt)?,
             "br" => read_limited(
                 brotli_decompressor::Decompressor::new(body.as_slice(), 4096),
                 limit,
                 "br",
+                interrupt,
             )?,
             "identity" => body,
             // Unknown coding: stop and hand over what we have.
@@ -46,26 +107,48 @@ pub(crate) fn decode(
 
 /// `deflate` is meant to be zlib-wrapped (RFC 1950), but some servers send
 /// raw DEFLATE (RFC 1951); accept both.
-fn inflate(body: &[u8], limit: u64) -> Result<Vec<u8>, NetError> {
+fn inflate(body: &[u8], limit: u64, interrupt: &Interrupt) -> Result<Vec<u8>, NetError> {
     let looks_zlib = match body {
         [cmf, flg, ..] => cmf & 0x0F == 8 && (u16::from(*cmf) << 8 | u16::from(*flg)) % 31 == 0,
         _ => false,
     };
     if looks_zlib {
-        read_limited(flate2::read::ZlibDecoder::new(body), limit, "deflate")
+        read_limited(
+            flate2::read::ZlibDecoder::new(body),
+            limit,
+            "deflate",
+            interrupt,
+        )
     } else {
-        read_limited(flate2::read::DeflateDecoder::new(body), limit, "deflate")
+        read_limited(
+            flate2::read::DeflateDecoder::new(body),
+            limit,
+            "deflate",
+            interrupt,
+        )
     }
 }
 
-fn read_limited<R: Read>(reader: R, limit: u64, what: &str) -> Result<Vec<u8>, NetError> {
+fn read_limited<R: Read>(
+    mut reader: R,
+    limit: u64,
+    what: &str,
+    interrupt: &Interrupt,
+) -> Result<Vec<u8>, NetError> {
     let mut out = Vec::new();
-    reader
-        .take(limit.saturating_add(1))
-        .read_to_end(&mut out)
-        .map_err(|e| NetError::Decode(format!("{what}: {e}")))?;
-    if out.len() as u64 > limit {
-        return Err(NetError::BodyTooLarge { limit });
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        interrupt.check()?;
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(NetError::Decode(format!("{what}: {e}"))),
+        };
+        out.extend_from_slice(buf.get(..n).unwrap_or_default());
+        if out.len() as u64 > limit {
+            return Err(NetError::BodyTooLarge { limit });
+        }
     }
     Ok(out)
 }
@@ -134,5 +217,27 @@ mod tests {
             decode(b"not gzip".to_vec(), "gzip", 1000),
             Err(NetError::Decode(_))
         ));
+    }
+
+    #[test]
+    fn decode_stops_on_cancel_or_deadline() {
+        let big = gzip(&vec![b'a'; 1_000_000]);
+        let cancelled = Interrupt::never();
+        cancelled.cancel.store(true, Ordering::Relaxed);
+        assert_eq!(
+            decode_with(big.clone(), "gzip", u64::MAX, &cancelled),
+            Err(NetError::Cancelled)
+        );
+        let late = Interrupt {
+            deadline: Instant::now(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        assert_eq!(
+            decode_with(big, "br", u64::MAX, &late),
+            Err(NetError::Timeout)
+        );
+        let flag = Arc::new(AtomicBool::new(false));
+        drop(CancelOnDrop(flag.clone()));
+        assert!(flag.load(Ordering::Relaxed));
     }
 }
