@@ -552,3 +552,73 @@ fn stray_columns_and_captions_do_not_panic() {
     );
     assert!(l.rect("c").width > 0.0);
 }
+
+#[test]
+fn positioned_table_is_a_containing_block() {
+    let l = lay(
+        "<table id=t style='position:relative;margin:10px' cellspacing=0><tr><td>x\
+         <div id=a style='position:absolute;top:5px;left:7px'>a</div></td></tr></table>",
+        "td { padding: 0 }",
+    );
+    let t = l.rect("t");
+    assert_rect(l.rect("a"), t.x + 7.0, t.y + 5.0, 8.0, 16.0);
+    // The absolutely positioned box does not widen the cell.
+    assert!(close(t.width, 8.0));
+}
+
+#[test]
+fn positioned_cell_is_a_containing_block() {
+    let l = lay(
+        "<table cellspacing=0><tr><td>aaaa<td id=c style='position:relative'>b\
+         <span id=a style='position:absolute;left:3px;top:4px'>z</span></tr></table>",
+        "td { padding: 0 }",
+    );
+    let c = l.rect("c");
+    assert_rect(l.rect("a"), c.x + 3.0, c.y + 4.0, 8.0, 16.0);
+}
+
+#[test]
+fn absolute_children_of_tables_and_rows_are_laid_out() {
+    let l = lay(
+        "<div id=t style='display:table;position:relative'>\
+           <div id=a1 style='position:absolute;left:1px;top:2px'>p</div>\
+           <div id=r style='display:table-row'>\
+             <div style='display:table-cell'>xx</div>\
+             <div id=a2 style='position:absolute;right:0;bottom:0'>q</div>\
+           </div></div>",
+        "",
+    );
+    let t = l.rect("t");
+    // Not wrapped into cells: the table only has its one 16px column.
+    assert!(close(t.width, 16.0), "{t:?}");
+    assert_rect(l.rect("a1"), t.x + 1.0, t.y + 2.0, 8.0, 16.0);
+    assert_rect(l.rect("a2"), t.max_x() - 8.0, t.max_y() - 16.0, 8.0, 16.0);
+}
+
+#[test]
+fn cells_contain_their_floats() {
+    let l = lay(
+        "<table cellspacing=0><tr><td id=c width=100><div id=f style='float:left;width:20px;height:50px'></div>x</td>\
+         <td id=d>y</td></tr></table>",
+        "td { padding: 0 }",
+    );
+    // A cell is a BFC root: its auto height includes its float.
+    assert!(close(l.rect("c").height, 50.0), "{:?}", l.rect("c"));
+    let f = l.rect("f");
+    assert_rect(f, l.rect("c").x, l.rect("c").y, 20.0, 50.0);
+    // The row is as tall as the float.
+    assert!(close(l.rect("d").height, 50.0));
+}
+
+#[test]
+fn flex_item_table_takes_the_imposed_height() {
+    let l = lay(
+        "<div style='display:flex;height:100px'><table id=t cellspacing=0><tr><td id=a>a</tr>\
+         <tr><td id=b>b</tr></table></div>",
+        "td { padding: 0 }",
+    );
+    // align-items: stretch imposes 100px; the rows share the extra.
+    assert!(close(l.rect("t").height, 100.0), "{:?}", l.rect("t"));
+    assert!(close(l.rect("a").height, 50.0));
+    assert!(close(l.rect("b").y, 50.0));
+}

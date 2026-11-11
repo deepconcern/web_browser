@@ -17,6 +17,13 @@
 //!    a specified table height over the rows;
 //! 5. places captions (`caption-side`) in the table wrapper box (§17.4).
 //!
+//! Cells are BFC roots that contain their floats (§10.6.7). A positioned
+//! table or cell is the containing block of its absolutely positioned
+//! descendants; absolutely positioned children of tables, row groups and
+//! rows are not table parts (they are never wrapped in anonymous cells)
+//! and go to the positioning module. A table that is a flex item takes
+//! the width and height its flex container imposes.
+//!
 //! # Fragments
 //!
 //! A table produces a fragment for the table box whose children are, in
@@ -72,12 +79,12 @@ use wb_style::{
 use self::borders::{Origin, Resolved, resolve_edge};
 use self::columns::{CellMeasure, ColMeasure, FixedWidth};
 use super::sizing::{
-    BoxEdges, SizeSpec, box_edges, clamp_min_max, height_px, max_size, min_size, solve_margins,
-    solve_width, used_height, width_spec,
+    BoxEdges, Margins, SizeSpec, box_edges, clamp_min_max, height_px, max_size, min_size,
+    solve_margins, solve_width, used_height, width_spec,
 };
 use super::{
-    CollapsedMargin, ContainingBlock, IntrinsicSizes, LayoutResult, WidthMode, block, inline,
-    intrinsic_sizes, layout_block_level, positioned,
+    CollapsedMargin, ContainingBlock, IntrinsicSizes, LayoutResult, WidthMode, block, float,
+    inline, intrinsic_sizes, layout_block_level, positioned,
 };
 use crate::box_tree::{BoxId, BoxKind, Formatting, LayoutBox, Level, MAX_BOX_DEPTH, Span};
 use crate::context::LayoutCtx;
@@ -147,6 +154,9 @@ struct Grid {
     row_section: Vec<usize>,
     /// Cells in display (row) order.
     cells: Vec<Cell>,
+    /// Absolutely positioned children of the table, its row groups and
+    /// rows (laid out by the positioning module).
+    abs: Vec<BoxId>,
     truncated: bool,
 }
 
@@ -233,6 +243,7 @@ fn build_grid(ctx: &LayoutCtx<'_>, table: BoxId) -> Grid {
                 Some(Err(run)) => run.push(c),
                 _ => body.push(Err(vec![c])),
             },
+            _ if positioned::is_absolutely_positioned(b) => g.abs.push(c),
             _ => {}
         }
     }
@@ -241,14 +252,21 @@ fn build_grid(ctx: &LayoutCtx<'_>, table: BoxId) -> Grid {
         let (group, rows): (Option<BoxId>, Vec<BoxId>) = match item {
             Ok(group) => (
                 Some(group),
-                tree.children(group)
-                    .iter()
-                    .copied()
-                    .filter(|r| {
-                        tree.get(*r)
-                            .is_some_and(|b| part(b) == Some(DisplayInternal::TableRow))
-                    })
-                    .collect(),
+                {
+                    g.abs
+                        .extend(tree.children(group).iter().copied().filter(|r| {
+                            tree.get(*r)
+                                .is_some_and(positioned::is_absolutely_positioned)
+                        }));
+                    tree.children(group)
+                }
+                .iter()
+                .copied()
+                .filter(|r| {
+                    tree.get(*r)
+                        .is_some_and(|b| part(b) == Some(DisplayInternal::TableRow))
+                })
+                .collect(),
             ),
             Err(rows) => (None, rows),
         };
@@ -343,10 +361,11 @@ fn place_cells(ctx: &LayoutCtx<'_>, g: &mut Grid, max_cols: usize) {
             let Some(&row) = g.rows.get(r) else { continue };
             let mut x = 0usize;
             for &cell in tree.children(row) {
-                if tree
-                    .get(cell)
-                    .is_none_or(|b| part(b) != Some(DisplayInternal::TableCell))
-                {
+                let Some(cb) = tree.get(cell) else { continue };
+                if part(cb) != Some(DisplayInternal::TableCell) {
+                    if positioned::is_absolutely_positioned(cb) {
+                        g.abs.push(cell);
+                    }
                     continue;
                 }
                 while occupied.get(x).is_some_and(|until| *until > r) {
@@ -686,6 +705,13 @@ fn cell_content_intrinsic(ctx: &mut LayoutCtx<'_>, id: BoxId, depth: usize) -> I
         _ => {
             let mut acc = IntrinsicSizes::default();
             for c in &b.children {
+                // Absolutely positioned boxes take no space.
+                if ctx
+                    .get(*c)
+                    .is_some_and(positioned::is_absolutely_positioned)
+                {
+                    continue;
+                }
                 let s = intrinsic_sizes(ctx, *c, depth + 1);
                 acc.min = acc.min.max(s.min);
                 acc.max = acc.max.max(s.max);
@@ -887,7 +913,12 @@ pub(crate) fn intrinsic(ctx: &mut LayoutCtx<'_>, id: BoxId, depth: usize) -> Int
 /// One laid out cell before its row heights are known.
 struct CellLayout {
     content: block::ContentLayout,
-    width: f32,
+    /// The cell's fragment, laid out at its own height; resized once the
+    /// row heights are known.
+    fragment: Option<FragmentId>,
+    /// The height of the contents, floats included (what
+    /// `vertical-align` moves).
+    inner: f32,
     /// Border-box height the cell needs.
     height: f32,
     /// Baseline from the border-box top.
@@ -960,6 +991,17 @@ pub(crate) fn layout_table_box(
         ctx.truncated = true;
     }
     let style = p.style.clone();
+    // A height imposed by a flex container (the table is a flex item).
+    let forced_height = ctx.flex.forced(id).height;
+    // A positioned table is the containing block of its absolutely
+    // positioned descendants. Its own absolutely positioned children (and
+    // its rows' and row groups') are not table parts: the positioning
+    // module lays them out, with the top of their parent as their static
+    // position.
+    let table_abs = positioned::enter_box(ctx, id, &style, b.parent.is_none());
+    for &child in &p.grid.abs {
+        positioned::defer_absolute(ctx, child, 0.0, depth + 1);
+    }
     let bp = p.border.add(&p.padding);
     let bp_h = bp.horizontal();
     let bp_v = bp.vertical();
@@ -1037,7 +1079,8 @@ pub(crate) fn layout_table_box(
         let Some(cbox) = ctx.get(c.id) else {
             laid.push(CellLayout {
                 content: block::ContentLayout::default(),
-                width: 0.0,
+                fragment: None,
+                inner: 0.0,
                 height: 0.0,
                 baseline: 0.0,
                 align: Align::Top,
@@ -1053,13 +1096,48 @@ pub(crate) fn layout_table_box(
             width: (width - cbp.horizontal()).max(0.0),
             height: None,
         };
+        // A cell is a BFC root (CSS 2.2 §9.4.1): its floats stay inside and
+        // count towards its height (§10.6.7). A positioned cell is the
+        // containing block of its absolutely positioned descendants.
+        let cell_edges = BoxEdges {
+            margin: Margins::default(),
+            border,
+            padding,
+        };
+        let floats = float::enter_block(ctx, c.id, true, false, &cell_edges, 0.0, ccb.width);
+        let cell_abs = positioned::enter_box(ctx, c.id, &cbox.style, false);
         let content = if ctx.exhausted() {
             ctx.truncated = true;
             block::ContentLayout::default()
         } else {
             block::layout_contents(ctx, cbox, c.id, &ccb, depth + 3, false, false)
         };
-        let ch = used_height(&cbox.style, content.height, None, cbp.vertical());
+        let float_bottom = float::exit_block(ctx, floats);
+        let ch = used_height(
+            &cbox.style,
+            content.height.max(float_bottom),
+            None,
+            cbp.vertical(),
+        );
+        // The fragment exists now so that the cell's absolutely positioned
+        // descendants can be laid out against it; it gets its final height
+        // and vertical alignment below.
+        let offset = Point::new(cbp.left, cbp.top);
+        for f in &content.children {
+            ctx.translate(*f, offset);
+        }
+        let size = Size::new(width, ch + cbp.vertical());
+        let fragment = ctx.box_fragment(
+            cbox,
+            Some(c.id),
+            FragmentKind::Box(BoxFragmentKind::Block),
+            size,
+            border,
+            padding,
+            content.children.clone(),
+            false,
+        );
+        positioned::exit_box(ctx, cell_abs, fragment, size, border, Point::ZERO);
         let empty = cbox.children.is_empty()
             || (matches!(
                 cbox.kind,
@@ -1071,10 +1149,11 @@ pub(crate) fn layout_table_box(
         laid.push(CellLayout {
             baseline: cbp.top + content.first_baseline.unwrap_or(ch),
             height: ch + cbp.vertical(),
-            width,
             align: align_of(&cbox.style.vertical_align),
             empty,
+            inner: content.height.max(float_bottom),
             content,
+            fragment,
         });
     }
 
@@ -1136,11 +1215,12 @@ pub(crate) fn layout_table_box(
             *h = 0.0;
         }
     }
-    // A taller table makes its rows taller (§17.5.3).
-    // M1 follow-up: honour a height imposed by a flex container
-    // (`ctx.flex.forced(id)` on the flex branch) once both are merged.
+    // A taller table makes its rows taller (§17.5.3). A flex container
+    // may impose the table box's height (never below its rows).
     let rows_total: f32 = row_h.iter().sum::<f32>() + sp_h;
-    let content_h = used_height(&style, rows_total, cb.height, bp_v).max(rows_total);
+    let content_h = forced_height
+        .unwrap_or_else(|| used_height(&style, rows_total, cb.height, bp_v))
+        .max(rows_total);
     if nrows > 0 {
         grow(&mut row_h, content_h - rows_total);
     }
@@ -1166,8 +1246,8 @@ pub(crate) fn layout_table_box(
         let room = height - cbp.vertical();
         let shift = match l.align {
             Align::Top => 0.0,
-            Align::Middle => (room - l.content.height) / 2.0,
-            Align::Bottom => room - l.content.height,
+            Align::Middle => (room - l.inner) / 2.0,
+            Align::Bottom => room - l.inner,
             Align::Baseline => {
                 above.get(c.row).copied().flatten().unwrap_or(l.baseline) - l.baseline
             }
@@ -1183,22 +1263,14 @@ pub(crate) fn layout_table_box(
                         .unwrap_or(l.baseline + shift),
             );
         }
-        let offset = Point::new(cbp.left, cbp.top + shift);
-        for f in &l.content.children {
-            ctx.translate(*f, offset);
+        let Some(f) = l.fragment else { continue };
+        // Absolutely positioned descendants already placed against the
+        // cell's own height keep their place.
+        // M1 follow-up: re-place bottom-anchored ones after the resize.
+        for kid in &l.content.children {
+            ctx.translate(*kid, Point::new(0.0, shift));
         }
-        let Some(f) = ctx.box_fragment(
-            cbox,
-            Some(c.id),
-            FragmentKind::Box(BoxFragmentKind::Block),
-            Size::new(l.width, height),
-            border,
-            padding,
-            l.content.children,
-            false,
-        ) else {
-            continue;
-        };
+        set_height(ctx, f, height);
         let override_style = if !p.collapse && l.empty && cbox.style.empty_cells == EmptyCells::Hide
         {
             Some(Arc::new(undecorated(&cbox.style)))
@@ -1327,6 +1399,24 @@ pub(crate) fn layout_table_box(
     {
         fr.style = s;
     }
+    let ml = edges.margin.left;
+    let mr = edges.margin.right;
+    let (ml, mr) = match mode {
+        WidthMode::Stretch if b.level == Level::Block => {
+            solve_margins(cb.width, table_size.width, ml, mr)
+        }
+        _ => (ml.unwrap_or(0.0), mr.unwrap_or(0.0)),
+    };
+    let mt = edges.margin.top.unwrap_or(0.0);
+    let mb = edges.margin.bottom.unwrap_or(0.0);
+    positioned::exit_box(
+        ctx,
+        table_abs,
+        table_frag,
+        table_size,
+        p.border,
+        Point::new(ml, mt),
+    );
 
     // The wrapper box and captions (§17.4, §17.4.1).
     let (fragment, size, table_y) = if has_captions {
@@ -1381,16 +1471,6 @@ pub(crate) fn layout_table_box(
         (table_frag, table_size, 0.0)
     };
 
-    let ml = edges.margin.left;
-    let mr = edges.margin.right;
-    let (ml, mr) = match mode {
-        WidthMode::Stretch if b.level == Level::Block => {
-            solve_margins(cb.width, size.width, ml, mr)
-        }
-        _ => (ml.unwrap_or(0.0), mr.unwrap_or(0.0)),
-    };
-    let mt = edges.margin.top.unwrap_or(0.0);
-    let mb = edges.margin.bottom.unwrap_or(0.0);
     let baseline = first_baseline.map(|v| sane(v + table_y));
     LayoutResult {
         fragment,
@@ -1429,4 +1509,20 @@ fn part_fragment(
         fr.style = s;
     }
     Some(f)
+}
+
+/// Sets the height of box fragment `f`'s border box (its border and
+/// padding stay as they are).
+fn set_height(ctx: &mut LayoutCtx<'_>, f: FragmentId, height: f32) {
+    if let Some(fr) = ctx.frag_mut(f) {
+        let h = sane_non_negative(height);
+        let border_v =
+            (fr.padding_box.y - fr.border_box.y) + (fr.border_box.max_y() - fr.padding_box.max_y());
+        let padding_v = (fr.content_box.y - fr.padding_box.y)
+            + (fr.padding_box.max_y() - fr.content_box.max_y());
+        fr.border_box.height = h;
+        fr.padding_box.height = (h - border_v).max(0.0);
+        fr.content_box.height = (fr.padding_box.height - padding_v).max(0.0);
+        fr.scrollable_overflow = fr.border_box;
+    }
 }

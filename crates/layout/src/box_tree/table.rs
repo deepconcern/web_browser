@@ -218,8 +218,8 @@ impl Fixer<'_> {
         }
     }
 
-    /// Wraps each maximal run of children whose part satisfies `pick` in a
-    /// new anonymous box of kind `wrap`. Runs of collapsible white space in
+    /// Wraps each maximal run of in-flow children whose part satisfies
+    /// `pick` in a new anonymous box of kind `wrap`. Runs of collapsible white space in
     /// tabular containers are dropped instead (§17.2.1 1.3–1.5).
     fn wrap_runs(
         &mut self,
@@ -231,7 +231,14 @@ impl Fixer<'_> {
         let mut out = Vec::with_capacity(children.len());
         let mut run: Vec<BoxId> = Vec::new();
         for &c in children {
-            if pick(self.part(c)) {
+            // Absolutely positioned children are not table parts and are
+            // never wrapped (CSS Tables 3 §3.2): the positioning module
+            // lays them out.
+            let out_of_flow = self
+                .tree
+                .get(c)
+                .is_some_and(|b| b.parent.is_some() && b.style.is_absolutely_positioned());
+            if !out_of_flow && pick(self.part(c)) {
                 run.push(c);
             } else {
                 self.flush(parent, &mut run, wrap, &mut out);
