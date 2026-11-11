@@ -13,3 +13,11 @@ level = 1
 
 [lints]
 workspace = true
+
+[dependencies]
+fontdb = { workspace = true }
+harfrust = { workspace = true }
+swash = { workspace = true }
+unicode-linebreak = { workspace = true }
+unicode-script = { workspace = true }
+unicode-bidi = { workspace = true }
