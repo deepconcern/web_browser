@@ -26,6 +26,7 @@ rustls-platform-verifier = { version = "0.7.1", default-features = false }
 tokio = { version = "1.54.1", default-features = false }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 tower-service = { version = "0.3.3", default-features = false }
+encoding_rs = { version = "0.8.35", default-features = false, features = ["alloc"] }
 
 # Project rules from AGENTS.md, enforced by the compiler and clippy.
 [workspace.lints.rust]
