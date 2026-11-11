@@ -23,6 +23,8 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "Unicode-3.0",
+    # ADR-0003: LLVM's permissive license, required by libfuzzer-sys.
+    "NCSA",
 ]
 confidence-threshold = 0.9
 # The allowlist is the policy, not a list of what we use today.
