@@ -18,6 +18,12 @@ zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
 zune-core = { version = "0.5.1", default-features = false, features = ["std"] }
 gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image-webp = { version = "0.2.4", default-features = false }
+fontdb = { version = "0.24.0", default-features = false, features = ["std", "fs", "fontconfig"] }
+harfrust = { version = "0.12.0", default-features = false, features = ["std"] }
+swash = { version = "0.2.10", default-features = false, features = ["std", "render"] }
+unicode-linebreak = "0.1.5"
+unicode-script = "0.5.9"
+unicode-bidi = { version = "0.3.18", default-features = false, features = ["hardcoded-data", "std"] }
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 tempfile = "3.27.0"
 url = { version = "2.5.8", default-features = false, features = ["std"] }
