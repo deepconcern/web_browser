@@ -29,3 +29,9 @@ unimplemented = "deny"
 unreachable = "deny"
 indexing_slicing = "deny"
 dbg_macro = "deny"
+
+# Optimised, smaller binaries for releases (see .github/workflows/release.yml).
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
