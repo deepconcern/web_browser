@@ -1,5 +1,7 @@
 /*
  * HTML §15.3.3 and §15.3.8: rules that apply only in quirks mode.
+ * Adapted from the HTML Living Standard, © WHATWG (Apple, Google, Mozilla,
+ * Microsoft), licensed under CC BY 4.0.
  */
 form { margin-bottom: 1em; }
 table {

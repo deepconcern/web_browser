@@ -1,6 +1,8 @@
 /*
  * The user-agent stylesheet, following HTML §15 "Rendering"
  * (https://html.spec.whatwg.org/multipage/rendering.html).
+ * Adapted from the HTML Living Standard, © WHATWG (Apple, Google, Mozilla,
+ * Microsoft), licensed under CC BY 4.0.
  * Logical properties are written as their physical equivalents for a
  * left-to-right, horizontal writing mode (the only one in M1).
  */
