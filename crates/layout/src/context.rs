@@ -34,6 +34,9 @@ pub(crate) struct LayoutCtx<'a> {
     pub(crate) intrinsic_cache: HashMap<BoxId, IntrinsicSizes>,
     /// Font metrics per style object.
     metrics_cache: HashMap<usize, Metrics>,
+    /// Flex layout state: sizes imposed on flex items and the item layout
+    /// cache (CSS Flexbox 1 §9).
+    pub(crate) flex: crate::formatting::flex::FlexState,
 }
 
 impl<'a> LayoutCtx<'a> {
@@ -53,6 +56,7 @@ impl<'a> LayoutCtx<'a> {
             inline_cache: HashMap::new(),
             intrinsic_cache: HashMap::new(),
             metrics_cache: HashMap::new(),
+            flex: Default::default(),
         }
     }
 
