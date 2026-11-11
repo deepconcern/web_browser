@@ -1,0 +1,32 @@
+[package]
+name = "wb-html-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MPL-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.10"
+wb-html = { path = ".." }
+wb-dom = { path = "../../dom" }
+
+# Not part of the main workspace (run with `cargo fuzz run <target>` from
+# crates/html).
+[workspace]
+
+[[bin]]
+name = "tokenizer"
+path = "fuzz_targets/tokenizer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tree_builder"
+path = "fuzz_targets/tree_builder.rs"
+test = false
+doc = false
+bench = false
