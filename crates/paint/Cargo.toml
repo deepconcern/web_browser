@@ -13,3 +13,15 @@ level = 5
 
 [lints]
 workspace = true
+
+[dependencies]
+tiny-skia = { workspace = true }
+wb-dom = { path = "../dom" }
+wb-image = { path = "../image" }
+wb-layout = { path = "../layout" }
+wb-style = { path = "../style" }
+wb-text = { path = "../text" }
+
+[dev-dependencies]
+wb-css = { path = "../css" }
+wb-html = { path = "../html" }

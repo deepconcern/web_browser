@@ -43,6 +43,8 @@ tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring
 tower-service = { version = "0.3.3", default-features = false }
 cssparser = { version = "0.38.0", default-features = false }
 encoding_rs = { version = "0.8.35", default-features = false, features = ["alloc"] }
+# wb-paint rasterizer (ADR-0002). No `png-format`: encoding PNGs is not paint's job.
+tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "simd"] }
 
 # Project rules from AGENTS.md, enforced by the compiler and clippy.
 [workspace.lints.rust]
