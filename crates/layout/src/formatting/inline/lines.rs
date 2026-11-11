@@ -286,6 +286,21 @@ pub(crate) fn break_lines(
     indent: f32,
     max_lines: usize,
 ) -> Vec<LineSpan> {
+    break_lines_from(prep, fixed, units, None, avail, indent, max_lines)
+}
+
+/// [`break_lines`] starting with `first` (the rest of a unit split by an
+/// emergency break) before `units`; the float module breaks lines one at
+/// a time with it.
+pub(crate) fn break_lines_from(
+    prep: &Prepared,
+    fixed: &[f32],
+    units: &[Unit],
+    first: Option<Unit>,
+    avail: f32,
+    indent: f32,
+    max_lines: usize,
+) -> Vec<LineSpan> {
     let mut lines: Vec<LineSpan> = Vec::new();
     let mut cur: Option<LineSpan> = None;
     let mut x = indent;
@@ -293,7 +308,7 @@ pub(crate) fn break_lines(
     let mut k = 0usize;
     // The current unit, possibly with its front already placed on earlier
     // lines by an emergency break.
-    let mut pending: Option<Unit> = None;
+    let mut pending: Option<Unit> = first;
     loop {
         if lines.len() >= max_lines {
             return lines;
