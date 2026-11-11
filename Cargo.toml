@@ -13,6 +13,8 @@ rust-version = "1.97"
 [workspace.dependencies]
 serde_json = "1"
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
+tempfile = "3.27.0"
 url = { version = "2.5.8", default-features = false, features = ["std"] }
 # wb-net (HTTP stack). TLS uses the ring provider only: no aws-lc-rs, no webpki-roots.
 brotli-decompressor = { version = "6.3.1", default-features = false, features = ["std"] }

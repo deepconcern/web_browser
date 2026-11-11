@@ -11,5 +11,11 @@ publish = false
 [package.metadata.layer]
 level = 1
 
+[dependencies]
+rusqlite.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true
