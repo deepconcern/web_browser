@@ -339,6 +339,20 @@ impl Page {
         });
     }
 
+    /// Styles and lays out the page for `options` (cached) without
+    /// rasterizing, so that hit testing works after a change.
+    pub fn layout(&mut self, options: &RenderOptions) {
+        if options.width.is_finite()
+            && options.height.is_finite()
+            && options.width > 0.0
+            && options.height > 0.0
+            && options.scale.is_finite()
+            && options.scale > 0.0
+        {
+            self.ensure_layout(options);
+        }
+    }
+
     /// Lays out the page (cached) and rasterizes the viewport described by
     /// `options` into premultiplied RGBA8 pixels.
     ///

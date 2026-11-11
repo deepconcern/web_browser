@@ -45,6 +45,14 @@ cssparser = { version = "0.38.0", default-features = false }
 encoding_rs = { version = "0.8.35", default-features = false, features = ["alloc"] }
 # wb-paint rasterizer (ADR-0002). No `png-format`: encoding PNGs is not paint's job.
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "simd"] }
+# wb-shell UI (see docs/components.md). egui's bundled fonts (OFL/UFL) stay
+# off: `default_fonts` is never enabled; the shell loads system fonts.
+egui = { version = "0.37.0", default-features = false }
+egui-winit = { version = "0.37.0", default-features = false, features = ["wayland", "x11", "smithay-clipboard"] }
+egui-wgpu = { version = "0.37.0", default-features = false, features = ["winit", "wayland", "x11"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "metal", "dx12", "gles"] }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
+pollster = "0.4.0"
 
 # Project rules from AGENTS.md, enforced by the compiler and clippy.
 [workspace.lints.rust]
