@@ -37,6 +37,9 @@ pub(crate) struct LayoutCtx<'a> {
     pub(crate) floats: crate::formatting::float::FloatState,
     /// Containing blocks collecting absolutely positioned boxes.
     pub(crate) abs: crate::formatting::positioned::AbsState,
+    /// Flex layout state: sizes imposed on flex items and the item layout
+    /// cache (CSS Flexbox 1 §9).
+    pub(crate) flex: crate::formatting::flex::FlexState,
 }
 
 impl<'a> LayoutCtx<'a> {
@@ -58,6 +61,7 @@ impl<'a> LayoutCtx<'a> {
             metrics_cache: HashMap::new(),
             floats: Default::default(),
             abs: Default::default(),
+            flex: Default::default(),
         }
     }
 

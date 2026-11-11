@@ -187,6 +187,14 @@ pub(crate) fn solve_width(
     let bp = edges.border_padding().horizontal();
     let ml = edges.margin.left;
     let mr = edges.margin.right;
+    // A width imposed by the parent formatting context (flex items).
+    if let Some(w) = ctx.flex.forced(id).width {
+        return HorizontalLayout {
+            content_width: sane_non_negative(w),
+            margin_left: ml.unwrap_or(0.0),
+            margin_right: mr.unwrap_or(0.0),
+        };
+    }
     let available = sane_non_negative(cb_width - ml.unwrap_or(0.0) - mr.unwrap_or(0.0) - bp);
     let intrinsic = |ctx: &mut LayoutCtx<'_>| {
         let s = intrinsic_sizes(ctx, id, depth);
@@ -314,6 +322,8 @@ pub(crate) fn compute_intrinsic(
             _ => {
                 let c = if *inline_children {
                     inline::intrinsic_content(ctx, id, depth)
+                } else if b.formatting() == Some(crate::box_tree::Formatting::Flex) {
+                    super::flex::intrinsic_content(ctx, id, depth)
                 } else {
                     let mut acc = IntrinsicSizes::default();
                     for c in &b.children {
