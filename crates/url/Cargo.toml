@@ -11,5 +11,8 @@ publish = false
 [package.metadata.layer]
 level = 0
 
+[dependencies]
+url = { workspace = true }
+
 [lints]
 workspace = true
