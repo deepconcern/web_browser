@@ -18,6 +18,7 @@ zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
 zune-core = { version = "0.5.1", default-features = false, features = ["std"] }
 gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image-webp = { version = "0.2.4", default-features = false }
+regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode"] }
 fontdb = { version = "0.24.0", default-features = false, features = ["std", "fs", "fontconfig"] }
 harfrust = { version = "0.12.0", default-features = false, features = ["std"] }
 swash = { version = "0.2.10", default-features = false, features = ["std", "render"] }
