@@ -81,7 +81,7 @@ jobs:
 
           Install:
             tar -xzf ${name}.tar.gz
-            install -m 0755 ${name}/web_browser ~/.local/bin/web_browser
+            install -D -m 0755 ${name}/web_browser ~/.local/bin/web_browser
 
           Verify the download first:
             sha256sum -c SHA256SUMS
@@ -124,7 +124,8 @@ jobs:
         run: |
           flags=()
           # A pre-release version (e.g. 0.1.0-beta.1) makes a pre-release.
-          case "$VERSION" in *-*) flags+=(--prerelease) ;; esac
+          # Build metadata (after "+") may contain hyphens too, so strip it first.
+          case "${VERSION%%+*}" in *-*) flags+=(--prerelease) ;; esac
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
