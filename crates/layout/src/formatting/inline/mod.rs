@@ -479,7 +479,7 @@ fn build_line(
                     b,
                     open,
                     end,
-                    true,
+                    b.split.end,
                     avail,
                     cb,
                     &mut pending,

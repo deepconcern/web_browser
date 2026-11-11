@@ -376,6 +376,9 @@ fn br_forces_breaks_and_empty_lines_have_height() {
     let l = lay("<div id=d>a<br>b<br><br>c</div><div id=e><br></div>", RESET);
     assert_eq!(l.line_texts("d"), vec!["a", "b", "", "c"]);
     assert_eq!(l.rect("d").height, 64.0);
+    // middle: the span's midpoint (2.4px below its baseline at 16px) sits
+    // 4px (half the parent's x-height) above the parent's baseline, so it
+    // drops 0.8px and its descent extends the line.
     assert_eq!(l.rect("e").height, 16.0);
 }
 
@@ -508,7 +511,10 @@ fn vertical_align_middle_top_bottom() {
     // top-aligned: its 40px layout box sits at the line top; content area
     // (16px) is centred in it.
     assert_approx!(l.rect("t").y - l.rect("d").y, 12.0);
-    assert_eq!(l.rect("e").height, 16.0);
+    // middle: the span's midpoint (2.4px below its baseline at 16px) sits
+    // 4px (half the parent's x-height) above the parent's baseline, so it
+    // drops 0.8px and its descent extends the line.
+    assert_approx!(l.rect("e").height, 16.8);
 }
 
 #[test]
@@ -588,7 +594,7 @@ fn form_controls_are_replaced_boxes() {
         "<input id=t value=hi><input id=c type=checkbox checked><input type=hidden id=h>\
          <select id=s><option>one</option><option selected>three</option></select>\
          <textarea id=ta cols=10 rows=3>x</textarea><input id=b type=submit>",
-        "body{margin:0} input,select,textarea{padding:0;border:0;margin:0}",
+        "body{margin:0} input,select,textarea{padding:0;border:0;margin:0;font-size:16px}",
     );
     let t = l.frag("t");
     let FragmentKind::Replaced(r) = &t.kind else {
@@ -700,9 +706,10 @@ fn overflow_clip_and_scroll_offsets() {
     let clip = s.clip.expect("clip");
     assert!(clip.x && clip.y && clip.scroll_container);
     assert_eq!(clip.rect, s.padding_box);
-    // Scrollable overflow: content 200 + padding 5 bottom; clamp to 150+5.
-    assert_eq!(s.scroll_offset, Point::new(0.0, 155.0));
-    assert_eq!(l.rect("c").y, 5.0 - 155.0);
+    // Scrollable overflow: padding 5 + content 200 + end padding 5 = 210,
+    // minus the 60px padding box: the offset is clamped to 150.
+    assert_eq!(s.scroll_offset, Point::new(0.0, 150.0));
+    assert_eq!(l.rect("c").y, 5.0 - 150.0);
     assert!(l.frag("v").clip.is_none());
     // Visible overflow reaches the document overflow.
     assert!(l.tree.document_overflow().height >= 600.0);

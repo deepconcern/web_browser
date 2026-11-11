@@ -349,7 +349,11 @@ impl FragmentTree {
     // stacking contexts, and `pointer-events`.
     pub fn hit_test(&self, point: Point) -> Option<Hit> {
         let root = self.root?;
-        let id = self.hit_in(root, point, 0)?;
+        // Points on the canvas outside every box hit the root element
+        // (its background covers the canvas).
+        let id = self
+            .hit_in(root, point, 0)
+            .or_else(|| self.document_overflow.contains(point).then_some(root))?;
         let frag = self.get(id)?;
         let mut node = frag.node;
         let mut cur = frag.parent;
@@ -416,6 +420,20 @@ impl FragmentTree {
 
 /// The source offset of the caret position nearest `x` in a text fragment.
 fn text_offset_at(t: &TextFragment, frag: &Fragment, x: f32) -> usize {
+    if t.runs.is_empty() {
+        // No glyphs (no font covers the text): assume equal advances.
+        let slice = t.text.get(t.range.clone()).unwrap_or("");
+        let n = slice.chars().count();
+        let w = frag.border_box.width;
+        if n == 0 || w <= 0.0 {
+            return t.source_offset(t.range.start);
+        }
+        let k = (((x - frag.border_box.x) / w) * n as f32)
+            .round()
+            .clamp(0.0, n as f32) as usize;
+        let off = slice.char_indices().nth(k).map_or(slice.len(), |(i, _)| i);
+        return t.source_offset(t.range.start + off);
+    }
     let mut best = t.range.start;
     let mut best_d = (x - frag.border_box.x).abs();
     for g in t.runs.iter().flat_map(|r| r.glyphs.iter()) {

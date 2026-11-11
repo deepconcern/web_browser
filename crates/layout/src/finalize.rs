@@ -6,7 +6,7 @@
 use crate::LayoutHost;
 use crate::context::translate_fragment;
 use crate::fragment::{Clip, Fragment, FragmentId, FragmentTree};
-use crate::geom::{Point, Rect, Size};
+use crate::geom::{Edges, Point, Rect, Size};
 
 pub(crate) fn finalize(
     frags: Vec<Fragment>,
@@ -69,16 +69,29 @@ pub(crate) fn finalize(
     // plus its descendants' overflow, unless it clips them.
     for i in (0..out.len()).rev() {
         let Some(f) = out.get(i) else { continue };
-        let mut own = if f.clip.is_some() {
-            f.padding_box
-        } else {
-            f.border_box
-        };
+        let mut kids: Option<Rect> = None;
         for c in &f.children {
             if let Some(cf) = out.get(c.index()) {
-                own = own.union(&contribution(cf));
+                let r = contribution(cf);
+                kids = Some(kids.map_or(r, |k| k.union(&r)));
             }
         }
+        let own = match (f.clip.is_some(), kids) {
+            // A scroll container's content area includes its end padding
+            // (CSS Overflow 3 §2.2).
+            (true, Some(k)) => {
+                let end_pad = Edges::new(
+                    0.0,
+                    f.padding_box.max_x() - f.content_box.max_x(),
+                    f.padding_box.max_y() - f.content_box.max_y(),
+                    0.0,
+                );
+                f.padding_box.union(&k.inflate(&end_pad))
+            }
+            (true, None) => f.padding_box,
+            (false, Some(k)) => f.border_box.union(&k),
+            (false, None) => f.border_box,
+        };
         if let Some(f) = out.get_mut(i) {
             f.scrollable_overflow = own;
         }
