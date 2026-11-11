@@ -48,7 +48,7 @@ tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "
 # wb-shell UI (see docs/components.md). egui's bundled fonts (OFL/UFL) stay
 # off: `default_fonts` is never enabled; the shell loads system fonts.
 egui = { version = "0.37.0", default-features = false }
-egui-winit = { version = "0.37.0", default-features = false, features = ["wayland", "x11", "smithay-clipboard"] }
+egui-winit = { version = "0.37.0", default-features = false, features = ["wayland", "x11", "clipboard"] }
 egui-wgpu = { version = "0.37.0", default-features = false, features = ["winit", "wayland", "x11"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "metal", "dx12", "gles"] }
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
