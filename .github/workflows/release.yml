@@ -1,0 +1,136 @@
+name: Release
+
+# Pushing a tag `vX.Y.Z` that matches the workspace version builds, packages
+# and publishes a GitHub Release. Running the workflow by hand
+# (workflow_dispatch) is a dry run: it builds and packages, then uploads the
+# tarball and checksums as a workflow artifact instead of releasing.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  build:
+    name: Gate, build and package
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Read workspace version and check the tag
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "wb-shell") | .version')"
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "::error::Could not read the wb-shell version from Cargo.toml"
+            exit 1
+          fi
+          if [ "$REF_TYPE" = "tag" ] && [ "$REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $REF_NAME does not match the workspace version v$version in Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Same gate as CI.
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --workspace --locked
+      - name: layer check
+        run: cargo xtask layers
+
+      - name: Build release binary
+        run: cargo build --release --locked -p wb-shell --target "$TARGET"
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          name="web_browser-${VERSION}-x86_64-linux"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage" dist
+          install -m 0755 "target/$TARGET/release/web_browser" "$stage/web_browser"
+          cp LICENSE README.md "$stage/"
+          cat > "$stage/INSTALL" <<EOF
+          web_browser ${VERSION} for x86_64 Linux (glibc)
+
+          Install:
+            tar -xzf ${name}.tar.gz
+            install -D -m 0755 ${name}/web_browser ~/.local/bin/web_browser
+
+          Verify the download first:
+            sha256sum -c SHA256SUMS
+
+          Run:
+            web_browser
+
+          License: MPL-2.0 (see LICENSE). Source and issues:
+          https://github.com/${GITHUB_REPOSITORY}
+          EOF
+          tar -C "$RUNNER_TEMP" --owner=0 --group=0 --numeric-owner \
+            -czf "dist/${name}.tar.gz" "$name"
+          (cd dist && sha256sum "${name}.tar.gz" > SHA256SUMS)
+          cat dist/SHA256SUMS
+          tar -tzvf "dist/${name}.tar.gz"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web_browser-${{ steps.version.outputs.version }}-x86_64-linux
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web_browser-${{ needs.build.outputs.version }}-x86_64-linux
+          path: dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          flags=()
+          # A pre-release version (e.g. 0.1.0-beta.1) makes a pre-release.
+          # Build metadata (after "+") may contain hyphens too, so strip it first.
+          case "${VERSION%%+*}" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "web_browser $VERSION" \
+            --generate-notes \
+            "${flags[@]}" \
+            "dist/web_browser-${VERSION}-x86_64-linux.tar.gz" \
+            dist/SHA256SUMS
