@@ -23,7 +23,6 @@ pub(crate) struct LayoutCtx<'a> {
     pub(crate) host: &'a dyn LayoutHost,
     /// The initial containing block size (for fixed positioning and
     /// viewport-relative layout).
-    #[allow(dead_code)]
     pub(crate) viewport: Size,
     frags: Vec<Fragment>,
     pub(crate) truncated: bool,
@@ -34,6 +33,10 @@ pub(crate) struct LayoutCtx<'a> {
     pub(crate) intrinsic_cache: HashMap<BoxId, IntrinsicSizes>,
     /// Font metrics per style object.
     metrics_cache: HashMap<usize, Metrics>,
+    /// Floats of the block formatting contexts being laid out.
+    pub(crate) floats: crate::formatting::float::FloatState,
+    /// Containing blocks collecting absolutely positioned boxes.
+    pub(crate) abs: crate::formatting::positioned::AbsState,
     /// Flex layout state: sizes imposed on flex items and the item layout
     /// cache (CSS Flexbox 1 §9).
     pub(crate) flex: crate::formatting::flex::FlexState,
@@ -56,6 +59,8 @@ impl<'a> LayoutCtx<'a> {
             inline_cache: HashMap::new(),
             intrinsic_cache: HashMap::new(),
             metrics_cache: HashMap::new(),
+            floats: Default::default(),
+            abs: Default::default(),
             flex: Default::default(),
         }
     }

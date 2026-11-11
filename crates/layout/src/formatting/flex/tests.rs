@@ -439,7 +439,7 @@ fn nested_flex_shrink_to_fit_in_row() {
 }
 
 #[test]
-fn absolutely_positioned_children_are_placeholders() {
+fn absolutely_positioned_children_use_sole_item_static_position() {
     let l = lay(
         r#"<div id=c><div id=a></div><div id=p>pp</div><div id=b></div></div>"#,
         "#c { display: flex; width: 300px; justify-content: center } #a, #b { width: 50px } #p { position: absolute }",
@@ -447,8 +447,33 @@ fn absolutely_positioned_children_are_placeholders() {
     // Not a flex item: a and b are centred together.
     assert_eq!(l.xywh("a").0, 100.0);
     assert_eq!(l.xywh("b").0, 150.0);
-    // Static position: centred as the sole item.
+    // §4.1: laid out by the positioning module (shrink-to-fit, 16px) at
+    // the static position of the sole flex item, centred.
     assert_eq!(l.xywh("p"), (142.0, 0.0, 16.0, 16.0));
+}
+
+#[test]
+fn absolutely_positioned_flex_children_follow_alignment_and_insets() {
+    let l = lay(
+        r#"<div id=c><div id=a>a</div><div id=e>e</div><div id=i>i</div><div id=n></div></div>"#,
+        "#c { position: relative; display: flex; flex-direction: column; width: 200px; height: 100px; \
+         padding: 10px; justify-content: flex-end; align-items: center } \
+         #a, #e, #i { position: absolute } #e { align-self: flex-start } \
+         #i { top: 5px; right: 5px } #n { width: 10px; height: 10px }",
+    );
+    // Column: main axis vertical (flex-end), cross axis horizontal
+    // (centre). Coordinates are relative to the container, whose padding
+    // box is the containing block.
+    let c = l.xywh("c");
+    assert_eq!(
+        l.xywh("a"),
+        (c.0 + 10.0 + 96.0, c.1 + 10.0 + 84.0, 8.0, 16.0)
+    );
+    assert_eq!(l.xywh("e"), (c.0 + 10.0, c.1 + 94.0, 8.0, 16.0));
+    // Insets win over the static position.
+    assert_eq!(l.xywh("i"), (c.0 + 220.0 - 5.0 - 8.0, c.1 + 5.0, 8.0, 16.0));
+    // Only #n is a flex item, at the end of the main axis.
+    assert_eq!(l.xywh("n").1, c.1 + 10.0 + 90.0);
 }
 
 #[test]

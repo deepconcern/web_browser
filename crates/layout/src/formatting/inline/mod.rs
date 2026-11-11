@@ -22,12 +22,12 @@ use std::sync::Arc;
 
 use wb_style::{ComputedStyle, TextAlign, VerticalAlign, VerticalAlignKeyword};
 
-use self::lines::{LineSpan, break_lines, build_units, span_width, tab_advance, trailing_hang};
+use self::lines::{LineSpan, build_units, span_width, tab_advance, trailing_hang};
 use self::prepare::ItemKind;
 pub(crate) use self::prepare::Prepared;
 use super::sizing::box_edges;
 use super::{
-    ContainingBlock, IntrinsicSizes, LayoutResult, intrinsic_sizes, layout_atomic_inline,
+    ContainingBlock, IntrinsicSizes, LayoutResult, float, intrinsic_sizes, layout_atomic_inline,
     positioned,
 };
 use crate::box_tree::{BoxId, LayoutBox};
@@ -265,20 +265,22 @@ pub(crate) fn layout_inline_formatting_context(
     let style = container.style.clone();
     let indent = sane(style.text_indent.resolve(avail));
     let units = build_units(&prep, &fixed);
-    let max_lines = crate::fragment::MAX_FRAGMENTS;
-    let spans = break_lines(&prep, &fixed, &units, avail, indent, max_lines);
+    // Lines come one at a time: next to floats each gets its own width.
+    let mut source = float::LineSource::new(ctx, id, &prep, &fixed, &units, avail, indent);
 
     let mut out = InlineLayout::default();
     let mut y = 0.0f32;
     // Inline boxes still open at the end of the previous line.
     let mut carry: Vec<BoxId> = Vec::new();
-    let span_count = spans.len();
-    for (n, span) in spans.iter().enumerate() {
+    let mut n = 0usize;
+    while let Some(next) = source.next(ctx, &prep, &fixed, &units, y) {
         if ctx.exhausted() {
             ctx.truncated = true;
             break;
         }
-        let is_last = n + 1 == span_count;
+        let span = &next.span;
+        let is_last = source.is_done();
+        y = next.y;
         let built = build_line(
             ctx,
             &prep,
@@ -287,13 +289,14 @@ pub(crate) fn layout_inline_formatting_context(
             container,
             span,
             if n == 0 { indent } else { 0.0 },
-            avail,
+            next.width,
             is_last,
             cb,
             &mut carry,
         );
+        n += 1;
         let Some(line) = built else { continue };
-        ctx.set_position(line.frag, Point::new(0.0, y));
+        ctx.set_position(line.frag, Point::new(next.x, y));
         out.lines.push(line.frag);
         if line.content {
             out.has_content = true;

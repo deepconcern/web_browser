@@ -327,6 +327,13 @@ pub(crate) fn compute_intrinsic(
                 } else {
                     let mut acc = IntrinsicSizes::default();
                     for c in &b.children {
+                        // Absolutely positioned boxes take no space.
+                        if ctx
+                            .get(*c)
+                            .is_some_and(super::positioned::is_absolutely_positioned)
+                        {
+                            continue;
+                        }
                         let s = intrinsic_sizes(ctx, *c, depth + 1);
                         acc.min = acc.min.max(s.min);
                         acc.max = acc.max.max(s.max);

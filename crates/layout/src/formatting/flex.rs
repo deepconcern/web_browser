@@ -20,10 +20,12 @@
 //! The box tree wraps each run of text directly inside a flex container
 //! in an anonymous block, the anonymous flex item of §4.
 //!
-//! Absolutely positioned children do not take part in flex layout (§4.1).
-//! Until the positioning module lays them out, they are placed as static
-//! placeholders at their static position (as if they were the sole flex
-//! item, §4.1), sized shrink-to-fit.
+//! Absolutely positioned children do not take part in flex layout (§4.1):
+//! they are handed to the positioning module with their static position,
+//! that of the sole flex item of the container aligned by
+//! `justify-content` and `align-self`/`align-items`, which it resolves
+//! once their size is known. A positioned flex container (and the root)
+//! is their containing block.
 //!
 //! Directions are physical for a horizontal, left-to-right writing mode:
 //! `row` runs left to right and `column` top to bottom.
@@ -616,18 +618,18 @@ pub(crate) fn layout_flex_container(
         definite_height
     };
 
+    // A positioned flex container (or the root) is the containing block
+    // of its absolutely positioned descendants.
+    let abs = positioned::enter_box(ctx, id, &style, b.parent.is_none());
+
     // §9.1 / §4.1: the flex items, in order-modified document order
     // (§5.4); absolutely positioned children are not flex items.
     let mut order: Vec<(i32, usize, BoxId)> = Vec::new();
-    let mut placeholders: Vec<BoxId> = Vec::new();
+    let mut out_of_flow: Vec<BoxId> = Vec::new();
     for (i, &c) in b.children.iter().enumerate() {
         let Some(cbox) = ctx.get(c) else { continue };
         if positioned::is_absolutely_positioned(cbox) {
-            // Laid out by the positioning module.
-            continue;
-        }
-        if cbox.style.is_absolutely_positioned() {
-            placeholders.push(c);
+            out_of_flow.push(c);
             continue;
         }
         if !matches!(cbox.kind, BoxKind::Container { .. } | BoxKind::Replaced(_)) {
@@ -754,7 +756,7 @@ pub(crate) fn layout_flex_container(
         content_width
     };
     let offset = Point::new(bp.left, bp.top);
-    let mut children: Vec<FragmentId> = Vec::with_capacity(items.len() + placeholders.len());
+    let mut children: Vec<FragmentId> = Vec::with_capacity(items.len());
     let mut first_baseline = None;
     let mut last_baseline = None;
     for (li, l) in lines.iter().enumerate() {
@@ -779,19 +781,20 @@ pub(crate) fn layout_flex_container(
         }
     }
 
-    // §4.1: absolutely positioned children, at their static position.
-    for c in placeholders {
-        if let Some(f) = place_placeholder(
-            ctx,
-            &container,
-            c,
-            inner_main_final,
-            inner_cross_final,
-            offset,
-            depth,
-        ) {
-            children.push(f);
-        }
+    // §4.1: absolutely positioned children are laid out by the
+    // positioning module, from the static position of the sole flex item.
+    let area = Size::new(content_width, content_height);
+    for c in out_of_flow {
+        let Some(cstyle) = ctx.get(c).map(|cb| cb.style.clone()) else {
+            continue;
+        };
+        let (main, cross) = static_alignment(&container, &cstyle);
+        let align = if axes.row {
+            Point::new(main, cross)
+        } else {
+            Point::new(cross, main)
+        };
+        positioned::defer_absolute_aligned(ctx, c, area, align, depth + 1);
     }
 
     let size = Size::new(
@@ -813,6 +816,8 @@ pub(crate) fn layout_flex_container(
     );
     let mt = edges.margin.top.unwrap_or(0.0);
     let mb = edges.margin.bottom.unwrap_or(0.0);
+    let margin_origin = Point::new(hl.margin_left, mt);
+    positioned::exit_box(ctx, abs, fragment, size, edges.border, margin_origin);
     LayoutResult {
         fragment,
         size,
@@ -1392,56 +1397,35 @@ fn place_line(
     out
 }
 
-/// §4.1: lays out an absolutely positioned child as a static placeholder
-/// at its static position, the position it would have as the sole flex
-/// item of the container.
-// M1 follow-up: the positioning module takes these over once
-// `positioned::is_absolutely_positioned` returns `true`.
-fn place_placeholder(
-    ctx: &mut LayoutCtx<'_>,
-    c: &Container<'_>,
-    id: BoxId,
-    inner_main: f32,
-    inner_cross: f32,
-    offset: Point,
-    depth: usize,
-) -> Option<FragmentId> {
-    let style = ctx.get(id)?.style.clone();
-    let r = super::layout_atomic_inline(ctx, id, &c.item_cb, depth + 1);
-    let f = r.fragment?;
-    let outer = r.margin_box();
-    let (outer_main, outer_cross) = if c.axes.row {
-        (outer.width, outer.height)
-    } else {
-        (outer.height, outer.width)
+/// §4.1: where the margin box of an absolutely positioned child goes as
+/// the sole flex item of the container, as fractions of the free space
+/// along the main and cross axes (0 = physical start, 1 = physical end).
+fn static_alignment(c: &Container<'_>, item: &ComputedStyle) -> (f32, f32) {
+    // A sole item: `space-between` falls back to the start, the other
+    // distributions centre it.
+    let main = match c.axes.justify(c.style.justify_content) {
+        Distribute::Start | Distribute::SpaceBetween => 0.0,
+        Distribute::End => 1.0,
+        Distribute::Center | Distribute::SpaceAround | Distribute::SpaceEvenly => 0.5,
     };
-    let (lead, _) = c
-        .axes
-        .justify(c.style.justify_content)
-        .offsets(inner_main - outer_main, 1);
     let main = if c.axes.main_reverse {
-        inner_main - lead - outer_main
+        1.0 - main
     } else {
-        lead
+        main
     };
-    let cross_free = inner_cross - outer_cross;
-    let cross = match cross_align(&c.axes, c.style, &style) {
-        CrossAlign::Center => cross_free / 2.0,
-        CrossAlign::End => cross_free,
-        _ if c.axes.cross_reverse => cross_free,
-        _ => 0.0,
+    // Flex-relative cross alignment; `stretch` and `baseline` act as
+    // `flex-start` for a box that is not stretched or baseline-aligned.
+    let cross = match cross_align(&c.axes, c.style, item) {
+        CrossAlign::Center => 0.5,
+        CrossAlign::End => 1.0,
+        CrossAlign::Start | CrossAlign::Stretch | CrossAlign::Baseline => 0.0,
     };
-    let (x, y) = if c.axes.row {
-        (main, cross)
+    let cross = if c.axes.cross_reverse {
+        1.0 - cross
     } else {
-        (cross, main)
+        cross
     };
-    let pos = Point::new(
-        sane(offset.x + x + r.margin.left),
-        sane(offset.y + y + r.margin.top),
-    );
-    ctx.set_position(f, pos);
-    Some(f)
+    (main, cross)
 }
 
 /// The intrinsic content widths of flex container `id` (§9.9.1): for a
