@@ -31,6 +31,7 @@ code.
 | `cssparser` 0.38 (default features off; pulls `dtoa-short`, `dtoa`, `itoa`, `smallvec`) | `wb-css` (tokenizer only, private) | MPL-2.0 (deps MIT/Apache-2.0, MPL-2.0) | Servo | Temporary scaffolding: replace with our own CSS Syntax 3 tokenizer |
 | `encoding_rs` | `wb-html` (decoding and charset labels) | (Apache-2.0 OR MIT) AND BSD-3-Clause | Independent crate (written for Gecko, standalone; implements the WHATWG Encoding Standard) | Keep for now; replace only if we write our own Encoding Standard decoders |
 | WHATWG `entities.json` (data) | `wb-html` (named character reference table, generated into `src/entities.rs`) | CC BY 4.0 (HTML Living Standard) | WHATWG specification data | Keep (spec data, not code) |
+| `tiny-skia` 0.12 (features `std`, `simd`; pulls `tiny-skia-path`, `arrayref`, `arrayvec`, `bytemuck`, `cfg-if`, `log`, `strict-num`) | `wb-paint` (rasterizer, private) | BSD-3-Clause (deps: `arrayref` BSD-2-Clause, `strict-num` MIT, others MIT/Apache-2.0 or Zlib/Apache-2.0/MIT) | Independent (linebender; Rust port of a subset of Skia's raster backend, not Chromium code) | Keep for M1 (ADR-0002); a `vello` GPU backend may come later, with tiny-skia kept as the reference renderer |
 
 Planned for M1, per the spec: `url`, `hyper`, `rustls`, `cssparser` (Servo-origin,
 temporary), `fontdb`, `rustybuzz`/`harfrust`, `swash`, `image`, `rusqlite`,
