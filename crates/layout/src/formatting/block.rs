@@ -50,10 +50,13 @@ pub(crate) fn layout_block_box(
     let bp = edges.border_padding();
     let hl = solve_width(ctx, id, &style, cb.width, &edges, mode, depth);
     let content_width = hl.content_width;
+    // A height imposed by the parent formatting context (flex items).
+    let forced_height = ctx.flex.forced(id).height;
     let specified_height = height_px(&style, cb.height, bp.vertical());
     let child_cb = ContainingBlock {
         width: content_width,
-        height: specified_height.map(|h| used_height(&style, h, cb.height, bp.vertical())),
+        height: forced_height
+            .or_else(|| specified_height.map(|h| used_height(&style, h, cb.height, bp.vertical()))),
     };
     let is_root = b.parent.is_none();
     let bfc = is_root || mode == WidthMode::ShrinkToFit || b.establishes_bfc();
@@ -66,7 +69,8 @@ pub(crate) fn layout_block_box(
         && min_h <= 0.0;
 
     let content = layout_contents(ctx, b, id, &child_cb, depth, top_open, bottom_open);
-    let content_height = used_height(&style, content.height, cb.height, bp.vertical());
+    let content_height = forced_height
+        .unwrap_or_else(|| used_height(&style, content.height, cb.height, bp.vertical()));
     let collapses_through = content.empty && top_open && bottom_open && content_height <= 0.0;
 
     // Place the contents inside the padding and border.
