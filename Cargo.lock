@@ -1530,6 +1530,13 @@ version = "0.0.1"
 [[package]]
 name = "wb-layout"
 version = "0.0.1"
+dependencies = [
+ "wb-css",
+ "wb-dom",
+ "wb-html",
+ "wb-style",
+ "wb-text",
+]
 
 [[package]]
 name = "wb-net"
