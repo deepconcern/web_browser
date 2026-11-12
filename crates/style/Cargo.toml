@@ -11,5 +11,13 @@ publish = false
 [package.metadata.layer]
 level = 3
 
+[dependencies]
+wb-css = { path = "../css" }
+wb-dom = { path = "../dom" }
+wb-url = { path = "../url" }
+
+[dev-dependencies]
+wb-html = { path = "../html" }
+
 [lints]
 workspace = true

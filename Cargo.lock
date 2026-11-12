@@ -1574,6 +1574,12 @@ dependencies = [
 [[package]]
 name = "wb-style"
 version = "0.0.1"
+dependencies = [
+ "wb-css",
+ "wb-dom",
+ "wb-html",
+ "wb-url",
+]
 
 [[package]]
 name = "wb-text"
