@@ -13,3 +13,8 @@ level = 5
 
 [lints]
 workspace = true
+
+[dependencies]
+tiny-skia = { workspace = true }
+wb-image = { path = "../image" }
+wb-text = { path = "../text" }
